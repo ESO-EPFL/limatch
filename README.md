@@ -3,7 +3,7 @@
 
 Limatch is the Python implementation of the automated lidar to lidar 3D correspondences retrieval method presented in:
 
-### Generalization of point-to-point matching for rigorous optimization in kinematic laser scanning
+### [[Generalization of point-to-point matching for rigorous optimization in kinematic laser scanning]](https://www.sciencedirect.com/science/article/pii/S0924271625003235)
 Aurélien Brun, Jakub Kolecki, Muyan Xiao, Luca Insolia, Elmar Vincent van der Zwan, Stéphane Guerrier, Jan Skaloud
 
 ## Introduction
@@ -83,7 +83,7 @@ The description stage relies on a retrained version of [LCD, Learned Cross Domai
 
 ## Results replication
 
-To replicate results presented in our paper, please follow the following steps.
+To replicate results presented in the aerial case of [the paper](https://www.sciencedirect.com/science/article/pii/S0924271625003235), please follow the following steps.
 
 #### I. Download required data and configuration
  Go to the following [zenodo record](https://zenodo.org/records/13929655) and download the two baseline point clouds (Baseline_cloud1.txt, Baseline_cloud2.txt). Each text file contains 7 columns and  no header.
@@ -133,6 +133,21 @@ To use the output correspondences for trajectory refinement in Dynamic Network, 
 You can the zip again the files and run the trajectory estimation in [ODyN](https://odyn.epfl.ch/) with the appropriate configuration, as indicated in the [ODyN documentation](https://github.com/SMAC-Group/ODyN)
 
 ## Reference
+
+```
+@article{BRUN2025107,
+title = {Generalization of point-to-point matching for rigorous optimization in kinematic laser scanning},
+journal = {ISPRS Journal of Photogrammetry and Remote Sensing},
+volume = {229},
+pages = {107-121},
+year = {2025},
+issn = {0924-2716},
+doi = {https://doi.org/10.1016/j.isprsjprs.2025.08.011},
+url = {https://www.sciencedirect.com/science/article/pii/S0924271625003235},
+author = {Aurélien Brun and Jakub Kolecki and Muyan Xiao and Luca Insolia and Elmar V. {van der Zwan} and Stéphane Guerrier and Jan Skaloud},
+keywords = {Kinematic laser scanning, Georeferencing, Sensor fusion, Point-to-point correspondences, Tightly-coupled lidar},
+}
+```
 
 ## Acknowledgements
 
