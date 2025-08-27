@@ -1,0 +1,10 @@
+faiss==1.7.4
+h5py==3.14.0
+laspy==2.5.4
+matplotlib==3.7.1
+multiprocessing==2.6.2.1
+numpy==1.24.3
+open3d==0.18.0
+Pillow==11.3.0
+PyYAML==6.0
+scipy==1.16.1

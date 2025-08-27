@@ -1,0 +1,3 @@
+[submodule "submodules/lcd"]
+	path = submodules/lcd
+	url = git@github.com:hkust-vgd/lcd.git

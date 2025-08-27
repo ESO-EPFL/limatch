@@ -1,0 +1,63 @@
+# General settings
+prj_folder: 'path_to_output_folder'
+nn_path: 'path_to_descriptor_weights' 
+visualize: False         #Bool, if true, run some rendering during matching
+save_stats: True         #Bool, save plots in  plots folder 
+
+# Data loading & parsing
+cloud_fmt: 'txt'         #str, format of the cloud to load, txt or las/laz supported currently
+thining: 1               #int, thining applied to raw clouds when loading
+# if cloud_fmt is txt, specify how to parse:
+header: 0                #Int, number of header lines
+xyz_col: [1,2,3]         #List, col id of xyz coord
+t_col: [0]               #List, col id of time of emission, if not available, set any other column
+lasvec_col: [4,5,6]      #List, Optionnal, can be None if not available, for advacned usage in factor graph
+delimiter:               #If none, infer refular space, if anything else, specify
+#if cloud_fmt is las or laz:
+extendedLasData: False    #Bool, if True, extended LAS data is kept for export
+
+# Tiling
+tile: False               #Bool, if tiling is required to apply local RANSAC per tiles (depends on trajectory stability): should be kept true in most cases
+save_tiles: False        #Bool, save overlapping area for inspection to laz
+min_den: 100             #Float, Min pts/m2 per tile to be kept for processing
+step_x: 25               #Float, Step size for tiling along x axis
+step_y: 25               #Float, Step size for tiling along y axis
+vox_size: 0.0            #Float, Voxel size for initial downsampling
+max_kpts:                #Int, Max number of kpts to keep per tile, if you enter RAM bottleneck, reduce this value should help
+
+# Keypoints detection
+iss_sln_r:  .2           #Float, ISS salient radius
+iss_nm_r: 0.1            #Float, ISS non-maxima suppression radius
+iss_g21: .65             #Float, ISS ratio between 2nd a 1st eigen values
+iss_g32: .65             #Float, ISS ratio between 3rd and 2nd eigen values
+iss_vox_s: 0.05          #Float, voxel size to apply on cloud for kpts detection
+iss_min_n: 5             #Int, ISS min amount of neighbor to detect keypoint
+
+# Points description
+lcd_patch_r: 0.75        #Float, LCD radius for input patch
+lcd_patch_n: 1024        #Int, LCD number of point in patch
+lcd_batch: 128           #Int, LCD number of patch to batch on GPU
+main_batch: 25000        #Int, number of patches to build, limit max RAM usage
+
+# Filtration
+reciprocity_test: True   #Bool, only keep correspondences that are true in both directions 
+rsc_thr: .15             #Float, distance threshold for ransac filtering
+rsc_p: 0.995             #Float, probability to find the best model in RANSAC
+rsc_maxN: 50000          #Int, max number of iteration in RANSAC
+rsc_lenCheck: 0.1        #Float, pre-fitration criteria
+uncertainty_r: .5        #Float, size of uncertainty sphere for all points for candidate selection: maximum expected misalignemnt in the cloud should be below twice this value
+
+# Refinement
+icp_patch_r: 1.0         #Float, radius to estimate ICP patch
+icp_max_n: 50            #Int, ICP max # of iterations
+icp_thresh: 0.075        #Float, ICP threshold for outlier classification
+icp_conv: 1.e-5          #Float, ICP convergence criteria
+icp_vox_s: 0             #Float, voxel size on ICP patch
+
+# Advanced, if laser vectors are available for factor graph trajectory correction
+adjustLasVec: False       #Bool, if ICP refinenment should be used to refine trajectory
+trj_path:                 #Column expected to be time, x, y, z, qw, qx, qy, qz of body frame
+R_sensor2body:            #Scanner to body rotation matrix
+
+
+
