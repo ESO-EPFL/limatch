@@ -81,7 +81,7 @@ Configuration files can be found in **./configs/**.
 
 The description stage relies on a retrained version of [LCD, Learned Cross Domain descriptor](https://github.com/hkust-vgd/lcd)'s 3D encoder. Weigths are available in **./weights/model.pth**
 
-## Results replication
+## Repicating results
 
 To replicate results presented in the aerial case of [the paper](https://www.sciencedirect.com/science/article/pii/S0924271625003235), please follow the following steps.
 
@@ -126,11 +126,39 @@ On the contrary if the main source of misalignment in the point cloud is not sys
 
 ![Point to point matching results with attitude error](./media/stats_nav.png)
 
-#### IV. Refine the trajectory using the correspondences
+#### V. Refine the trajectory using the correspondences
 
 To use the output correspondences for trajectory refinement in Dynamic Network, please go to the [Online Dynamic Network solver (ODyN) documentation](https://github.com/SMAC-Group/ODyN) and download the example data with [INS/GNSS + LIDAR](https://github.com/SMAC-Group/ODyN/raw/master/data/vallet/INS+lidar.zip). To use your correspondences instead, extract the archive and replace the LiDAR_p2p.txt file content with your output (found in **project_folder/cor_outputs/LiDAR_p2p.txt**). 
 
 You can the zip again the files and run the trajectory estimation in [ODyN](https://odyn.epfl.ch/) with the appropriate configuration, as indicated in the [ODyN documentation](https://github.com/SMAC-Group/ODyN)
+
+## Use with your own data
+
+### I. Simple usage (no trajectory estimation in factor graph)
+
+To simply test the pipeline on your data (without laser vector extraction for trajectory correction as in the paper), you can use the following command, either on LAS/LAZ clouds or with ASCII clouds, setting **adjustLasVec** setting to False in your configuration.
+
+```bash
+python3 matching_pipeline.py -c1 path_to_cloud_1 -c2 path_to_cloud_2 -y path_to_config.yml
+
+```
+
+The output **LiDAR_p2p.txt** then contains the following info (units are based on the units of your input):
+- Column 1-2: time of emission of point b and a
+- Column 3-5: coordinates of point b
+- Column 6-8: coordinates of point a
+- Column 9-11: ICP refinement vector
+
+To get the refined coordinates of your correspondences, you can simply do *xyz_a_refined = xyz_a + icp_vec*
+
+### II. Advanced usage with laser vector extraction (e.g. for trajectory refinement)
+
+To refine the trajectory based on the extracted correspondences, you will need to provide some more information to the pipeline, as detailed in the paper Sec.2, namely:
+- Laser vectors (point coordinate in scanner frame at time of emission). Access to this depends on the scanner manufacturer (e.g. via parsing of SDC files for Riegl). The input cloud must be formed as detailed in the "Replicating results" section.
+- Rotation matrix, scanner to body, representing expressing the rotation from the scanner frame to the body frame of the trajectory to refine. To be set in the configuration **R_sensor2body**
+- The trajectory itself, following the same format as presented in the "Replicating results" section, path of which needs to be set in the configuration file **trj_path** 
+
+
 
 ## Reference
 

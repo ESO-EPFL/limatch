@@ -334,18 +334,16 @@ def buildCorresFile(corres, tile_a, tile_b, cfg, icp_vec):
             extra_data_b = tile_b.extraData[ind_b]
             out_data = np.concatenate((time_b, time_a, xyz_b, xyz_a, icp_vec, extra_data_b, extra_data_a), axis=1)
             out_data = out_data[out_data[:, 0].argsort()]
-            np.savetxt(cfg['prj_folder'] + f"cor_outputs/out{cfg['tile_id']}.csv",
+            np.savetxt(cfg['prj_folder'] + f"cor_outputs/LiDAR_p2p.txt",
                         out_data,
-                        header='time_b, time_a, x_b, y_b, z_b, x_a, y_a, z_a, icp_x, icp_y, icp_z, extra_b (multi col), extra_a (multi col)',)
-        else:   
-            return_nbr_a = tile_a.return_nbr[ind_a]
-            return_nbr_b = tile_b.return_nbr[ind_b]
-       
-            out_data = np.concatenate((time_b, time_a, return_nbr_b, return_nbr_a, icp_vec), axis=1)
+                        header='time_b, time_a, x_b, y_b, z_b, x_a, y_a, z_a, icp_x, icp_y, icp_z, extra_b (multi col), extra_a (multi col), (xyz_a + icp_vec_a = refined xyz_a)',)
+        else:        
+            out_data = np.concatenate((time_b, time_a, xyz_b, xyz_a, icp_vec), axis=1)
             out_data = out_data[out_data[:, 0].argsort()]
-            np.savetxt(cfg['prj_folder'] + f"cor_outputs/out{cfg['tile_id']}.csv",
+            np.savetxt(cfg['prj_folder'] + f"cor_outputs/LiDAR_p2p.txt",
                         out_data,
-                        fmt='%.9f, %.9f, %d, %d, %.3f, %.3f, %.3f')
+                        fmt='%.9f, %.9f,  %.3f, %.3f, %.3f, %.3f, %.3f, %.3f, %.3f, %.3f, %.3f',
+                        header='time_b, time_a, x_b, y_b, z_b, x_a, y_a, z_a, icp_x, icp_y, icp_z (xyz_a + icp_vec_a = refined xyz_a)')
 
 def removeBoundaryPts(pcd, keypts, buffer):
     """
