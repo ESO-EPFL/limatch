@@ -6,6 +6,9 @@ Limatch is the Python implementation of the automated lidar to lidar 3D correspo
 ### [[Generalization of point-to-point matching for rigorous optimization in kinematic laser scanning]](https://www.sciencedirect.com/science/article/pii/S0924271625003235)
 Aurélien Brun, Jakub Kolecki, Muyan Xiao, Luca Insolia, Elmar Vincent van der Zwan, Stéphane Guerrier, Jan Skaloud
 
+> [!WARNING]  
+> LiMatch is under active development and comes without guarantee. If you spot a bug or would like a feature to be added, you are welcome to open an issue or a pull request 😃 
+
 ## Introduction
 
 Limatch allows the automated extraction of point to point correspondences between point clouds that partially overlap. Starting from two point cloud files (las, laz or txt), Limatch outputs a set of point to point correspondences that correspond to the same physical entities over the scanned area. These correspondences can be used in several ways such as: refining the trajectory in a factor graph approach (advanced), refining the mounting and boresight parameters of the lidar, or for rigid point cloud registration.
@@ -15,9 +18,6 @@ Similar to tie point generation in photogrammetry, but applied to point clouds, 
 ![Point to point matching pipeline](./media/p2p_pipeline.png)
 
 More details on the implementation and usage of the correspondences for trajectory refinement in MLS (car), MLS (handheld) and ALS are available in the original paper.
-
-[!NOTE]
-LiMatch is under active development and comes without guarantee. If you spot a bug or would like a feature to be added, you are welcome to open an issue or a pull request 😃 
 
 ## Usage 
 
