@@ -36,7 +36,7 @@ Please use the following commands for installation.
 
 
 ```bash
-git clone https://github.com/<your-username>/p2p.git
+git clone https://github.com/ESO-EPFL/limatch.git
 
 cd p2p
 
