@@ -16,6 +16,9 @@ Similar to tie point generation in photogrammetry, but applied to point clouds, 
 
 More details on the implementation and usage of the correspondences for trajectory refinement in MLS (car), MLS (handheld) and ALS are available in the original paper.
 
+[!NOTE]
+LiMatch is under active development and comes without guarantee. If you spot a bug or would like a feature to be added, you are welcome to open an issue or a pull request 😃 
+
 ## Usage 
 
 Run the matching pipeline between two example point clouds like this:
