@@ -1,10 +1,14 @@
 import numpy as np
 import open3d as o3d
 from scipy.spatial import KDTree
+from scipy.interpolate import interp1d
+from scipy.spatial.transform import Rotation as R, Slerp
+
 import faiss
 from pathlib import Path
 import laspy as lp
 from lib.georef import correctLasVecICP
+from pyproj import Transformer
 
 def createProjectFolder(path):
     '''
@@ -305,8 +309,19 @@ def buildCorresFile(corres, tile_a, tile_b, cfg, icp_vec):
     time_b = tile_b.time[ind_b].reshape(-1, 1)
 
     if cfg['adjustLasVec']:
-        las_vec_a = tile_a.las_vec[ind_a]
-        las_vec_b = tile_b.las_vec[ind_b]
+        if cfg.get("simulateLasVec", False):
+            las_vec_a, las_vec_b = simulateLasVec(
+                time_a.reshape(-1),
+                time_b.reshape(-1),
+                tile_a.xyz[ind_a],
+                tile_b.xyz[ind_b],
+                cfg['trj_path'],
+                cfg['R_sensor2body'],
+                np.array(cfg.get('lever_arm', [0.0, 0.0, 0.0])),
+                cfg['point_epsg'])
+        else:
+            las_vec_a = tile_a.las_vec[ind_a]
+            las_vec_b = tile_b.las_vec[ind_b]
         out_data = np.concatenate((time_b, time_a, las_vec_b, las_vec_a), axis=1)
         out_data = out_data[out_data[:, 0].argsort()]
         np.savetxt(cfg['prj_folder'] + f"cor_outputs/LiDAR_p2p_noRefinement.txt",
@@ -348,20 +363,6 @@ def buildCorresFile(corres, tile_a, tile_b, cfg, icp_vec):
 def removeBoundaryPts(pcd, keypts, buffer):
     """
     Remove keypoints that are to close to the tile boundary to avoid border effect
-
-    Parameters
-    ----------
-    pcd : open3d.Geometry.PointCloud()
-    keypts : open3d.Geometry.PointCloud()
-        point cloud that contain only the keypoints related to pcd
-    buffer : float
-        width of the buffer applied on pcd to filter keypts close to pcd boundary
-
-    Returns
-    -------
-    cropped_kpts : open3d.Geometry.PointCloud()
-        Filtered keypoints.
-
     """
     bbox = pcd.get_axis_aligned_bounding_box()
     boundary_pts = np.asarray(bbox.get_box_points())
@@ -384,3 +385,39 @@ def removeBoundaryPts(pcd, keypts, buffer):
 
     cropped_kpts = keypts.crop(small_box)
     return cropped_kpts
+
+def simulateLasVec(time_a, time_b, xyz_a, xyz_b, trj_path, R_s2b, a_s, point_epsg):
+    """
+    Simulate laser vectors from trajectory (in ECEF) and tile points (any EPSG).
+
+    """
+    trj = np.loadtxt(trj_path, delimiter=',', skiprows=1)
+    trj_t = trj[:, 0]
+    trj_xyz = trj[:, 1:4]             # ECEF
+    trj_q = trj[:, 4:8]               # qw, qx, qy, qz
+    trj_q = trj_q[:, [1, 2, 3, 0]]  # w,x,y,z -> x,y,z,w according to Scipy notation
+    rots = R.from_quat(trj_q)         # scipy expects (x,y,z,w)
+
+    pos_interp = interp1d(trj_t, trj_xyz, axis=0, kind="linear", fill_value="extrapolate")
+    slerp = Slerp(trj_t, rots)
+
+    transformer = Transformer.from_crs(point_epsg, "epsg:4978", always_xy=True)
+
+    ecef_a = np.vstack(transformer.transform(xyz_a[:, 0], xyz_a[:, 1], xyz_a[:, 2])).T
+    ecef_b = np.vstack(transformer.transform(xyz_b[:, 0], xyz_b[:, 1], xyz_b[:, 2])).T
+
+    las_vec_a = np.zeros_like(ecef_a)
+    las_vec_b = np.zeros_like(ecef_b)
+
+    for i, (ta, tb, pa, pb) in enumerate(zip(time_a, time_b, ecef_a, ecef_b)):
+        Ra = slerp([ta])[0].as_matrix()
+        Rb = slerp([tb])[0].as_matrix()
+        pos_a = pos_interp(ta)
+        pos_b = pos_interp(tb)
+
+        inner_a = Ra.T @ (pa - pos_a) - a_s
+        inner_b = Rb.T @ (pb - pos_b) - a_s
+        las_vec_a[i, :] = R_s2b.T @ inner_a
+        las_vec_b[i, :] = R_s2b.T @ inner_b
+
+    return las_vec_a, las_vec_b
