@@ -28,13 +28,8 @@ def visMatchPts(xyz_key, correspondences):
 
     spheres = [pcd_a]
 
-    for i in range(cor_xyz.shape[0]):
-        spheres.append(create_sphere(0.25, cor_xyz[i])) 
-
-
-    pcd_a.estimate_normals(
-       search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=2., max_nn=60))
-
+    # for i in range(cor_xyz.shape[0]):
+    #     spheres.append(create_sphere(0.25, cor_xyz[i])) 
 
     o3d.visualization.draw(spheres)
 
