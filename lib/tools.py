@@ -45,13 +45,15 @@ def loadLasCloud(file, cfg):
     """
     Load a point cloud from a LAS file
     """
-    has_gps_time = "gps_time" in las.point_format.dimensions
-
+    has_extraDim = False
     if 'extraDim' in cfg and cfg['extraDim'] is not None:
         has_extraDim = True
 
     with lp.open(file) as fh:
         las = fh.read()
+
+        has_gps_time = "gps_time" in [d.name for d in las.point_format.dimensions]
+
         if has_gps_time:
             time = las.gps_time
         else:
