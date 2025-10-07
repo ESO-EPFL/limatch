@@ -131,7 +131,7 @@ On the contrary if the main source of misalignment in the point cloud is not sys
 
 #### V. Refine the trajectory using the correspondences
 
-To use the output correspondences for trajectory refinement in Dynamic Network, please go to the [Online Dynamic Network solver (ODyN) documentation](https://github.com/SMAC-Group/ODyN) and download the example data with [INS/GNSS + LIDAR](https://github.com/SMAC-Group/ODyN/raw/master/data/vallet/INS+lidar.zip). To use your correspondences instead, extract the archive and replace the LiDAR_p2p.txt file content with your output (found in **project_folder/cor_outputs/LiDAR_p2p.txt**). 
+To use the output correspondences for trajectory refinement in Dynamic Network, please go to the [Online Dynamic Network solver (ODyN) documentation](https://github.com/SMAC-Group/ODyN) and download the example data with [INS/GNSS + LIDAR](https://github.com/SMAC-Group/ODyN/raw/master/data/brun25/INS+lidar.zip). To use your correspondences instead, extract the archive and replace the LiDAR_p2p.txt file content with your output (found in **project_folder/cor_outputs/LiDAR_p2p.txt**). 
 
 You can the zip again the files and run the trajectory estimation in [ODyN](https://odyn.epfl.ch/) with the appropriate configuration, as indicated in the [ODyN documentation](https://github.com/SMAC-Group/ODyN)
 
