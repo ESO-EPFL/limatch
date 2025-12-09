@@ -58,7 +58,6 @@ def loadLasCloud(file, cfg):
     with lp.open(file) as fh:
         las = fh.read()
 
-        # fix here: compare with dimension names
         has_gps_time = "gps_time" in [d.name for d in las.point_format.dimensions]
 
         if has_gps_time:

@@ -33,11 +33,9 @@ print(f"Processing  {cfg['tile_id']} ...")
 print('Visualization set to '+str(cfg['visualize']))
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-torch.serialization.add_safe_globals([np.dtype,np.core.multiarray.scalar,np.dtypes.Float32DType])
-
 model = models.PointNetAutoencoder(256, 6, 6, True)
 
-model.load_state_dict(torch.load(cfg["nn_path"], map_location=device, weights_only=True)["model"])
+model.load_state_dict(torch.load(cfg["nn_path"], map_location=device, weights_only=False)["model"])
 model = model.to(device)
 time1 = time.time()
 
