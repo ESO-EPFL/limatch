@@ -11,6 +11,7 @@ from lib.utils_LCD import getFeatures
 from lib.tools import *
 from lib.vis import visKpts, visMatchPts
 from lib.filter import *
+from lib.georef import R_enu2ecef
 import multiprocessing as mp
 
 from submodules.lcd.lcd import models
@@ -154,13 +155,15 @@ for i in np.unique(tile_a.rsc_id):
     else:
         corres_icp = np.concatenate((corres_icp, corres_tile), axis=0)
 
+R_enu2ecef = R_enu2ecef(corres_icp[:, 4:7], cfg['point_epsg'])
+print(f"ENU->ECEF rotation matrix from correspondences in EPSG:{cfg['point_epsg']}:\n{R_enu2ecef}")
 icp_vec = -corres_icp[:, -3:]
 print("\033[FICP refinement... Done    ")
 time7 = time.time()
 # %% ----------------- Step 05 - Save output, Compute Stats & Visualization ----------------- %% #
 
 print("Building correspondences file ...")
-buildCorresFile(corres_rsc, tile_a, tile_b, cfg, icp_vec)
+buildCorresFile(corres_rsc, tile_a, tile_b, cfg, icp_vec, R_enu2ecef)
 
 if cfg['save_stats']:
     print("Building stats & plots...")
