@@ -40,3 +40,31 @@ def ransacFilter(cor, cfg):
     else: 
         print(f"inliers: {int(100*filt_cor.shape[0]/n_corr)}% ")
     return filt_cor
+
+def reciprocityTest(tile_a, tile_b):
+    """
+    Compute reciprocal correspondences between tile_a and tile_b.
+
+    Returns
+    -------
+    reciprocal_mask : np.ndarray (bool)
+    """
+
+    b_index_of_id = {int(k): idx for idx, k in enumerate(tile_b.kpts_id)}
+
+    M = tile_a.kpts_id.shape[0]
+    idx_in_b = np.full(M, -1, dtype=int)   # default -1 means "not found"
+
+    for i in range(M):
+        b_id = int(tile_a.cor_id[i]) 
+        idx_in_b[i] = b_index_of_id.get(b_id, -1)
+
+    valid = idx_in_b >= 0
+
+    reciprocal = np.zeros(M, dtype=bool)
+    reciprocal[valid] = (
+        tile_b.cor_id[idx_in_b[valid]].astype(int)
+        == tile_a.kpts_id[valid].astype(int)
+    )
+
+    return reciprocal

@@ -1,6 +1,9 @@
 import math
 import torch
 import numpy as np
+import logging
+from pathlib import Path
+from submodules.lcd.lcd import models
 
 def extractPatches(tile, cfg, idx):
     '''
@@ -85,3 +88,60 @@ def getFeatures(tile, model, device, cfg):
     del patches
 
     return feat
+
+
+log = logging.getLogger(__name__)
+
+def loadDescriptor(cfg):
+    """
+    Load the descriptor model safely and robustly.
+    Handles both:
+      - pure state_dict
+      - {"model": state_dict}
+    Ensures model.eval() and torch.no_grad() usage.
+    """
+    model_path = Path(cfg["nn_path"])
+    if not model_path.exists():
+        raise FileNotFoundError(f"Model checkpoint not found: {model_path}")
+
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+        log.info("Using CUDA for descriptor inference.")
+    else:
+        device = torch.device("cpu")
+        log.warning("CUDA not available. Running on CPU. Expect slower descriptor inference.")
+
+    model = models.PointNetAutoencoder(256, 6, 6, True)
+
+    log.info(f"Loading descriptor model weights from: {model_path}")
+
+    try:
+        checkpoint = torch.load(model_path, map_location=device)
+    except Exception as e:
+        raise RuntimeError(f"Failed to load checkpoint {model_path}: {e}")
+
+    if isinstance(checkpoint, dict) and "model" in checkpoint:
+        state = checkpoint["model"]
+        log.info("Loaded nested checkpoint with key 'model'.")
+    elif isinstance(checkpoint, dict) and all(
+        isinstance(v, torch.Tensor) for v in checkpoint.values()
+    ):
+        state = checkpoint
+        log.info("Loaded direct state_dict checkpoint.")
+    else:
+        raise ValueError(
+            f"Unrecognized checkpoint structure. Expected state_dict or dict with 'model'. "
+            f"Got keys: {list(checkpoint.keys())}"
+        )
+
+    try:
+        model.load_state_dict(state)
+    except Exception as e:
+        raise RuntimeError(
+            f"Checkpoint structure does not match model architecture: {e}"
+        )
+    model.to(device)
+    model.eval()
+
+    log.info("Descriptor model successfully loaded and set to eval() mode.")
+    return model, device

@@ -45,7 +45,7 @@ def R_enu2ecef(xyz, epsg):
 
     """
     xyz_mean = np.mean(xyz, axis=0)
-    crs_local = CRS.from_epsg(2056)
+    crs_local = CRS.from_epsg(epsg)
     crs_ecef  = CRS.from_epsg(4978)  # WGS84 ECEF
     crs_geo   = CRS.from_epsg(4979)  # WGS84 lat/lon/height
 

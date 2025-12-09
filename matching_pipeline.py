@@ -7,14 +7,20 @@ import numpy as np
 
 
 from lib import stats, icp
-from lib.utils_LCD import getFeatures
+from lib.utils_LCD import getFeatures, loadDescriptor
 from lib.tools import *
 from lib.vis import visKpts, visMatchPts
-from lib.filter import *
+from lib.filter import ransacFilter, reciprocityTest
 from lib.georef import R_enu2ecef
 import multiprocessing as mp
+import os
+import psutil
 
-from submodules.lcd.lcd import models
+
+process = psutil.Process(os.getpid())
+
+def get_ram_usage_mb():
+    return process.memory_info().rss / 1024**2
 
 time0 = time.time()
 
@@ -32,8 +38,7 @@ createProjectFolder(cfg['prj_folder'])
 print(f"Processing  {cfg['tile_id']} ...")
 print('Visualization set to '+str(cfg['visualize']))
 
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-model = models.PointNetAutoencoder(256, 6, 6, True)
+model, device = loadDescriptor(cfg)
 
 model.load_state_dict(torch.load(cfg["nn_path"], map_location=device, weights_only=False)["model"])
 model = model.to(device)
@@ -78,20 +83,20 @@ if 'max_kpts' in cfg and cfg['max_kpts'] is not None:
 cleanKpts(tile_a, tile_b, cfg)
 cleanKpts(tile_b, tile_a, cfg)
 
-
 if cfg['visualize']:
     visKpts(tile_a, tile_b, kpts_a, kpts_b)
 
+print(f"RAM usage: {get_ram_usage_mb():.2f} MB")
 del kpts_a, kpts_b
 
 time3 = time.time()
 # %% ----------------- Step 02 - Pts description ----------------- %% #
-tile_a.feat = np.zeros((tile_a.kpts_id.shape[0], 256),dtype='float32')
-tile_b.feat = np.zeros((tile_b.kpts_id.shape[0], 256),dtype='float32')
-
 print("Description...")
-tile_a.feat = getFeatures(tile_a, model, device, cfg)
-tile_b.feat = getFeatures(tile_b, model, device, cfg)
+
+with torch.no_grad():
+    tile_a.feat = getFeatures(tile_a, model, device, cfg)
+    tile_b.feat = getFeatures(tile_b, model, device, cfg)
+    print(f"RAM usage: {get_ram_usage_mb():.2f} MB")
 print(f"\033[FDescription... Done")
 time4 = time.time()
 # %% ------------------ Step 03 - Pts matching ------------------- %% #
@@ -101,24 +106,18 @@ getCandidates(tile_b, tile_a, cfg)
 
 tile_a.cor_id,feat_dist_a, corr_xyz_a = featSearch(tile_a, tile_b)
 tile_b.cor_id,feat_dist_b, corr_xyz_b = featSearch(tile_b, tile_a)
-
+print(f"RAM usage: {get_ram_usage_mb():.2f} MB")
 del tile_a.feat, tile_b.feat
 
 corres = buildCorres(tile_a, tile_b, feat_dist_a)
 
 if cfg['reciprocity_test']:
     print("Reciprocity test...", end=' ')
-    reciprocal_mask = np.zeros(tile_a.kpts_id.shape[0],dtype=bool)
-    def check_reciprocal(i):
-        return tile_a.kpts_id[i] == tile_b.cor_id[np.where(tile_b.kpts_id == tile_a.cor_id[i])[0][0]]
-
-    with mp.Pool(processes=mp.cpu_count()) as pool:
-        reciprocal_mask = pool.map(check_reciprocal, range(tile_a.kpts_id.shape[0]))
-    reciprocal_mask = np.array(reciprocal_mask, dtype=bool)
+    reciprocal_mask = reciprocityTest(tile_a, tile_b)
 
     print(f"{100*np.sum(reciprocal_mask)/tile_a.kpts_id.shape[0]:.2f}% of correspondences kept")   
     corres = corres[reciprocal_mask]
-
+    print(f"RAM usage: {get_ram_usage_mb():.2f} MB")
 del tile_a.candidates, tile_b.candidates
 
 time5 = time.time()
@@ -139,6 +138,7 @@ for i in np.unique(tile_a.rsc_id):
     corres_rsc_list.append(corres_tile[idx_a_rsc[:, 0], :])
 
 corres_rsc = np.concatenate(corres_rsc_list, axis=0)
+print(f"RAM usage: {get_ram_usage_mb():.2f} MB")
 print("Ransac filtering... Done                       ")
 time6 = time.time()
 
@@ -154,8 +154,9 @@ for i in np.unique(tile_a.rsc_id):
         corres_icp = corres_tile
     else:
         corres_icp = np.concatenate((corres_icp, corres_tile), axis=0)
-
-R_enu2ecef = R_enu2ecef(corres_icp[:, 4:7], cfg['point_epsg'])
+print(f"RAM usage: {get_ram_usage_mb():.2f} MB")
+# R_enu2ecef = R_enu2ecef(corres_icp[:, 4:7], cfg['point_epsg'])
+R_enu2ecef = None
 print(f"ENU->ECEF rotation matrix from correspondences in EPSG:{cfg['point_epsg']}:\n{R_enu2ecef}")
 icp_vec = -corres_icp[:, -3:]
 print("\033[FICP refinement... Done    ")

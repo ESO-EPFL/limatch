@@ -74,7 +74,6 @@ def loadLasCloud(file, cfg):
 
     return las.xyz, time, las_vec, extra
 
-
 def prepOverlap(tile_a, tile_b, cfg):
     '''
     Prepare the data for tiling by filtering out non-overlapping sections and assigning a tile id to each point
@@ -263,6 +262,7 @@ def getCandidates(tile_key, tile_target, cfg):
         candidates.extend(batch_res)
 
     tile_key.candidates = candidates
+
 def featSearch(tile_key, tile_target):
     """
     Find nearest neighbors in feature space for a set of keypoints
@@ -315,6 +315,7 @@ def buildCorresFile(corres, tile_a, tile_b, cfg, icp_vec, R_enu2ecef=None):
 
     if cfg['adjustLasVec']:
         if cfg.get("simulateLasVec", False):
+            print("Simulating laser vectors for output...")
             las_vec_a, las_vec_b = simulateLasVec(
                 time_a.reshape(-1),
                 time_b.reshape(-1),
@@ -427,3 +428,4 @@ def simulateLasVec(time_a, time_b, xyz_a, xyz_b, trj_path, R_s2b, a_s, point_eps
         las_vec_b[i, :] = R_s2b.T @ inner_b
 
     return las_vec_a, las_vec_b
+
