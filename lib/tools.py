@@ -130,7 +130,7 @@ def prepOverlap(tile_a, tile_b, cfg):
     tile_b.kdt = KDTree(tile_b.xyz)
     print(f"{np.max(kept_id_a)} valid tiles generated...")
 
-class tile:
+class Tile:
     def __init__(self, time, xyz, lasvec, extraData = None):
         """
         Class to store the tiled data and keypoints

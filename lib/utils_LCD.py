@@ -92,7 +92,7 @@ def getFeatures(tile, model, device, cfg):
 
 log = logging.getLogger(__name__)
 
-def loadDescriptor(cfg):
+def load_model(cfg):
     """
     Load the descriptor model safely and robustly.
     Handles both:
