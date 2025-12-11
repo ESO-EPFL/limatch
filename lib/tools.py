@@ -11,6 +11,8 @@ from lib.georef import correctLasVecICP
 from pyproj import Transformer
 from scipy.spatial.transform import Rotation as R
 
+from lib.corres import Corres
+
 
 def createProjectFolder(path):
     '''
@@ -131,66 +133,221 @@ def prepOverlap(tile_a, tile_b, cfg):
     print(f"{np.max(kept_id_a)} valid tiles generated...")
 
 class Tile:
-    def __init__(self, time, xyz, lasvec, extraData = None):
+    def __init__(self, time, xyz, lasvec, extraData=None):
         """
-        Class to store the tiled data and keypoints
+        Tile object storing pointwise data and small helpers.
+        Backwards-compatible with previous Tile: same attribute names.
 
+        Persistent (kept unless explicitly cleared):
+            - time
+            - xyz
+            - las_vec
+            - rsc_id
+            - extraData
+            - shift (may be set later)
+            - kdt
+
+        Ephemeral (created/cleared by pipeline steps):
+            - kpts_id
+            - n_kpts
+            - feat
+            - candidates
+            - cor_id
         """
         self.time = time
-        self.xyz = xyz 
+        self.xyz = np.asarray(xyz)
         self.las_vec = lasvec.astype(np.float32)
-        self.rsc_id = np.ones((xyz.shape[0],), dtype=np.uint16)
+        self.rsc_id = np.ones((self.xyz.shape[0],), dtype=np.uint16)
 
         self.kdt = KDTree(self.xyz)
 
         if extraData is not None:
             self.extraData = extraData
         else:
-            self.extraData = np.empty((xyz.shape[0], 0))
+            self.extraData = np.empty((self.xyz.shape[0], 0))
 
     @classmethod
     def fromASCII(cls, file, cfg):
         """
-        Load point cloud data from an ASCII file
+        Load point cloud data from an ASCII file and return Tile.
         """
         xyz, time, las_vec = loadAsciiCloud(file, cfg)
         return cls(time, xyz, las_vec)
-    
+
     @classmethod
     def fromLAS(cls, file, cfg):
         """
-        Load point cloud data from a LAS file
+        Load point cloud data from a LAS file and return Tile.
         """
         xyz, time, las_vec, extra = loadLasCloud(file, cfg)
         return cls(time, xyz, las_vec, extra)
-    
+
+    def apply_mask(self, mask):
+        """
+        Apply a boolean mask or integer-index array to the tile to keep only
+        selected points. Guarantees pointwise consistency and rebuilds KDTree.
+        Also invalidates ephemeral attributes that refer to point indices.
+
+        Parameters
+        ----------
+        mask : array-like
+            - boolean array of length N (where N == len(self.xyz))
+            - or an integer index array of selected indices
+        """
+        if mask is None:
+            return
+
+        mask = np.asarray(mask)
+
+        # If mask contains integers (indices), convert to boolean mask
+        if np.issubdtype(mask.dtype, np.integer):
+            idx = mask
+            bool_mask = np.zeros((self.xyz.shape[0],), dtype=bool)
+            bool_mask[idx] = True
+            mask = bool_mask
+        else:
+            if mask.dtype != bool:
+                mask = mask.astype(bool)
+            if mask.shape[0] != self.xyz.shape[0]:
+                raise AssertionError("Mask length must match number of points in xyz")
+
+        # Apply mask to all pointwise persistent arrays
+        self.xyz = self.xyz[mask]
+        if hasattr(self, "time") and self.time is not None and self.time.shape[0] == mask.shape[0]:
+            self.time = self.time[mask]
+        if hasattr(self, "las_vec") and self.las_vec is not None and self.las_vec.shape[0] == mask.shape[0]:
+            self.las_vec = self.las_vec[mask]
+        if hasattr(self, "rsc_id") and self.rsc_id is not None and self.rsc_id.shape[0] == mask.shape[0]:
+            self.rsc_id = self.rsc_id[mask]
+        if hasattr(self, "extraData") and self.extraData is not None and self.extraData.shape[0] == mask.shape[0]:
+            self.extraData = self.extraData[mask]
+
+        self.rebuild_kdt()
+
+        self.clear_keypoint_data()
+        self.clear_features()
+        self.clear_candidates()
+        self.clear_correspondences()
+
     def filterByMask(self, mask):
         """
-        Filter points by masks
+        Backwards-compatible alias for existing code: call apply_mask.
         """
-        assert mask.shape[0] == self.xyz.shape[0], "xyz and id array must have the same length"
+        self.apply_mask(mask)
 
-        self.time = self.time[mask]
-        self.xyz = self.xyz[mask]
-        self.las_vec = self.las_vec[mask]
-        self.rsc_id = self.rsc_id[mask]
-        self.extraData = self.extraData[mask]
-        
-        self.kdt = KDTree(self.xyz)
-          
-    def voxTracing(self, cfg):
+    def rebuild_kdt(self):
+        """Rebuild KDTree from current xyz."""
+        # protect against empty cloud
+        if self.xyz.shape[0] == 0:
+            self.kdt = KDTree(np.empty((0, 3)))
+        else:
+            self.kdt = KDTree(self.xyz)
 
+    # -------------------------
+    # Voxelization wrapper
+    # -------------------------
+    def apply_voxelization(self, cfg):
+        """
+        Thin wrapper that voxel-downsamples the point cloud (same semantics as old voxTracing)
+        while preserving consistency via apply_mask. This method does not change any ephem values
+        except by invalidation through apply_mask.
+        """
+        # create a temporary pointcloud and downsample (reuse previous algorithm)
         pcd_raw = o3d.geometry.PointCloud()
         pcd_raw.points = o3d.utility.Vector3dVector(self.xyz)
 
-        pcd_raw = pcd_raw.voxel_down_sample(cfg['vox_size'])
-        print(f"Raw: {self.xyz.shape[0]} pts -> Voxelized: {pcd_raw.points.__len__()} pts")
+        pcd_down = pcd_raw.voxel_down_sample(cfg['vox_size'])
+        print(f"Raw: {self.xyz.shape[0]} pts -> Voxelized: {pcd_down.points.__len__()} pts")
 
-        self.kdt = KDTree(self.xyz)
-        _, id_vox = self.kdt.query(np.array(pcd_raw.points), k=1, workers=-1)
-        mask = np.zeros((self.xyz.shape[0],), dtype=bool)
-        mask[id_vox] = True
-        self.filterByMask(mask)
+        # find nearest ids of voxel centers in original xyz
+        # rebuild a temporary KDTree if necessary
+        if pcd_down.points.__len__() == 0:
+            # nothing left after voxelization
+            mask = np.zeros((self.xyz.shape[0],), dtype=bool)
+        else:
+            _, id_vox = self.kdt.query(np.asarray(pcd_down.points), k=1, workers=-1)
+            mask = np.zeros((self.xyz.shape[0],), dtype=bool)
+            mask[id_vox] = True
+
+        # apply mask (this will rebuild kdt and clear ephemeral attributes)
+        self.apply_mask(mask)
+
+    # keep existing method name for compatibility, call new wrapper
+    def voxTracing(self, cfg):
+        self.apply_voxelization(cfg)
+
+    # -------------------------
+    # Ephemeral attribute helpers
+    # -------------------------
+    def clear_features(self):
+        """Delete descriptor matrix if present."""
+        if hasattr(self, "feat"):
+            try:
+                delattr = False
+                # try to delete to free memory
+                del self.feat
+            except Exception:
+                # fallback: set to None
+                self.feat = None
+
+    def clear_candidates(self):
+        """Delete candidate lists if present."""
+        if hasattr(self, "candidates"):
+            try:
+                del self.candidates
+            except Exception:
+                self.candidates = None
+
+    def clear_correspondences(self):
+        """Delete correspondence id mapping (cor_id) if present."""
+        if hasattr(self, "cor_id"):
+            try:
+                del self.cor_id
+            except Exception:
+                self.cor_id = None
+
+    def clear_keypoint_data(self):
+        """
+        Remove keypoint-related data that index into xyz (kpts_id and related fields).
+        Called whenever xyz is changed.
+        """
+        if hasattr(self, "kpts_id"):
+            try:
+                del self.kpts_id
+            except Exception:
+                self.kpts_id = np.array([], dtype=int)
+        if hasattr(self, "n_kpts"):
+            try:
+                del self.n_kpts
+            except Exception:
+                self.n_kpts = 0
+
+    # -------------------------
+    # Convenience checks / assertions
+    # -------------------------
+    def assert_pointwise_consistency(self):
+        """Run quick consistency checks (useful for debugging)."""
+        n = self.xyz.shape[0]
+        if hasattr(self, "time"):
+            assert self.time.shape[0] == n, "time length mismatch with xyz"
+        if hasattr(self, "las_vec"):
+            assert self.las_vec.shape[0] == n, "las_vec length mismatch with xyz"
+        if hasattr(self, "rsc_id"):
+            assert self.rsc_id.shape[0] == n, "rsc_id length mismatch with xyz"
+        if hasattr(self, "extraData"):
+            assert self.extraData.shape[0] == n, "extraData length mismatch with xyz"
+
+    # -------------------------
+    # String repr for debugging
+    # -------------------------
+    def __repr__(self):
+        n = self.xyz.shape[0]
+        parts = [f"Tile(n_pts={n})"]
+        if hasattr(self, "kpts_id"):
+            parts.append(f"kpts={len(self.kpts_id)}")
+        if hasattr(self, "feat") and self.feat is not None:
+            parts.append(f"feat_shape={getattr(self, 'feat').shape}")
+        return "<" + " ".join(parts) + ">"
 
 def issKpts(xyz,cfg):
     """
@@ -286,23 +443,24 @@ def featSearch(tile_key, tile_target):
 
     return idx_t, f_dist, tile_target.xyz[idx_t]
 
-def buildCorres(tile_key, tile_tgt, feat_dist_a):
-    """
-    Just formatting the correspondences so that we store the info somewhere.
-    """
-    kpts_xyz_a = tile_key.xyz[tile_key.kpts_id] + tile_key.shift
-    corres_xyz_a = tile_tgt.xyz[tile_key.cor_id] + tile_tgt.shift
 
-    correspondences = np.empty([kpts_xyz_a.shape[0], 14])
-    correspondences[:, 0] = tile_key.kpts_id.reshape(-1) # Kpts id in native tile
-    correspondences[:, 1] = tile_key.cor_id.reshape(-1) # Corres id in the target tile
-    correspondences[:, 2] = np.linalg.norm((kpts_xyz_a-corres_xyz_a), axis=1) # Distance between the two points
-    correspondences[:, 3] = feat_dist_a # Distance in feature space
-    correspondences[:, 4:7] = kpts_xyz_a # Kpts coordinates
-    correspondences[:, 7:10] = corres_xyz_a # Corres coordinates
-    correspondences[:, 10] = tile_key.rsc_id[tile_key.kpts_id] #Tile id for RANSAC filtring
-   
-    return correspondences
+def buildCorres(tile_key, tile_tgt, feat_dist):
+    """
+    Create correspondence dataclass.
+    """
+    xyz_a = tile_key.xyz[tile_key.kpts_id]
+    xyz_b = tile_tgt.xyz[tile_key.cor_id]
+
+    return Corres(
+        idx_a = tile_key.kpts_id.copy(),
+        idx_b = tile_key.cor_id.copy(),
+        d_xyz = np.linalg.norm(xyz_a - xyz_b, axis=1),
+        d_feat = feat_dist.copy(),
+        xyz_a = xyz_a,
+        xyz_b = xyz_b,
+        rsc_id = tile_key.rsc_id[tile_key.kpts_id].copy(),
+        icp_vec = np.zeros((xyz_a.shape[0], 3), dtype=float),
+    )
 
 def buildCorresFile(corres, tile_a, tile_b, cfg, icp_vec, R_enu2ecef=None):
     """

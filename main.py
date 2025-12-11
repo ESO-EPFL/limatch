@@ -32,8 +32,10 @@ def main():
     corres, stats = match_clouds(args.cloud1, args.cloud2, args.yml)
 
     print("Matching completed.")
-    print("Correspondences:", corres.shape[0])
-    print("Stats:", stats)
+    print("Correspondences:", corres.idx_a.shape[0])
+    print("Time stats:")
+    for key, value in stats.items():
+        print(f"  {key}: {value:.2f} seconds")
 
 
 if __name__ == "__main__":

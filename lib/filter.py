@@ -1,14 +1,13 @@
 import numpy as np
 import open3d as o3d
-import multiprocessing as mp
 
 def ransacFilter(cor, cfg):
     """
     RANSAC filter based on correspondences
     """
-    n_corr = cor.shape[0]
-    kpts_xyz = cor[:, 4:7]
-    target_xyz = cor[:, 7:10]
+    n_corr = cor.idx_a.shape[0]
+    kpts_xyz = cor.xyz_a
+    target_xyz = cor.xyz_b
     thresh = cfg['rsc_thr']
     
     correspondences_index = np.ones(

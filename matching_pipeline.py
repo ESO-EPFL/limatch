@@ -5,6 +5,7 @@ import os
 import psutil
 
 from lib import stats, icp
+from lib.corres import concatenate_corres
 from lib.utils_LCD import getFeatures, load_model
 from lib.tools import *
 from lib.vis import visKpts, visMatchPts
@@ -167,10 +168,10 @@ def match_features(tile_a, tile_b, cfg):
 
     if cfg.get('reciprocity_test', False):
         print("Reciprocity test...", end=' ')
-        reciprocal_mask = reciprocityTest(tile_a, tile_b)
-        kept_pct = 100 * np.sum(reciprocal_mask) / float(tile_a.kpts_id.shape[0]) if tile_a.kpts_id.shape[0] > 0 else 0.0
+        mask = reciprocityTest(tile_a, tile_b)
+        kept_pct = 100 * np.sum(mask) / float(tile_a.kpts_id.shape[0]) if tile_a.kpts_id.shape[0] > 0 else 0.0
         print(f"{kept_pct:.2f}% kept")
-        corres = corres[reciprocal_mask]
+        corres = corres.apply_mask(mask)
         print(f"RAM usage: {get_ram_usage_mb():.2f} MB")
 
     try:
@@ -186,23 +187,23 @@ def filter_matches(corres, tile_a, tile_b, cfg):
     Returns concatenated corres_rsc array.
     """
     print("RANSAC filtering...")
-    corres_rsc_list = []
-
+    corres_rsc = None
     unique_tiles = np.unique(tile_a.rsc_id)
     for i in unique_tiles:
         print(f"\033[FRansac filtering, tile {int(i)},", end=' ')
-        corres_tile = corres[corres[:, 10] == i]
+        corres_tile = corres.apply_mask(corres.rsc_id == i)
+
         idx_a_rsc = ransacFilter(corres_tile, cfg)
 
         if idx_a_rsc.shape[0] < 50:
             print(f"Warning tile {int(i)} has <50 matches -> skipping")
             continue
-        corres_rsc_list.append(corres_tile[idx_a_rsc[:, 0], :])
+        corres_filtered = corres_tile.apply_mask(idx_a_rsc[:, 0])
+        if corres_rsc is None:
+            corres_rsc = corres_filtered
+        else:
+            corres_rsc = concatenate_corres(corres_rsc, corres_filtered)
 
-    if len(corres_rsc_list) == 0:
-        return np.empty((0, corres.shape[1]))
-
-    corres_rsc = np.concatenate(corres_rsc_list, axis=0)
     print("RANSAC Done")
     return corres_rsc
 
@@ -217,15 +218,12 @@ def refine_icp(corres_rsc, tile_a, tile_b, cfg):
 
     for i in unique_tiles:
         print(f"\033[FICP refinement, tile {int(i)}...")
-        corres_tile = corres_rsc[corres_rsc[:, 10] == i]
+        corres_tile = corres_rsc.apply_mask(corres_rsc.rsc_id == i)
         icp.corrICP(tile_a, tile_b, corres_tile, cfg)
         if corres_icp is None:
-            corres_icp = corres_tile.copy()
+            corres_icp = corres_tile
         else:
-            corres_icp = np.concatenate((corres_icp, corres_tile), axis=0)
-
-    if corres_icp is None:
-        return np.empty((0, 14))
+            corres_icp = concatenate_corres(corres_icp, corres_tile)
 
     print(f"RAM usage: {get_ram_usage_mb():.2f} MB")
     return corres_icp
@@ -234,20 +232,17 @@ def build_output(corres, corres_rsc, corres_icp, tile_a, tile_b, cfg):
     """
     Wrap final output generation and stats building.
     """
-    if corres_icp.size == 0:
-        icp_vec = np.empty((0, 3))
-    else:
-        icp_vec = -corres_icp[:, -3:]
+    icp_vec = -corres_icp.icp_vec
 
     R_enu2ecef_mat = None
-    buildCorresFile(corres_rsc, tile_a, tile_b, cfg, icp_vec, R_enu2ecef_mat)
+    buildCorresFile(corres_rsc.to_array(), tile_a, tile_b, cfg, icp_vec, R_enu2ecef_mat)
 
     stats_raw = stats_rsc = stats_icp = None
     if cfg.get('save_stats', False):
         print("Building stats & plots...")
-        stats_raw = stats.compute_stats(corres, cfg['tile_id'])
-        stats_rsc = stats.compute_stats(corres_rsc, cfg['tile_id']) if corres_rsc.size != 0 else None
-        stats_icp = stats.compute_stats(corres_icp, cfg['tile_id']) if corres_icp.size != 0 else None
+        stats_raw = stats.compute_stats(corres.to_array(), cfg['tile_id'])
+        stats_rsc = stats.compute_stats(corres_rsc.to_array(), cfg['tile_id']) 
+        stats_icp = stats.compute_stats(corres_icp.to_array(), cfg['tile_id'])
 
         if stats_raw is not None:
             stats.plot_stats(stats_raw, cfg['prj_folder'] + "plots/", f'raw_{cfg["tile_id"]}')
