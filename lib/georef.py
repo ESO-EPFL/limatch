@@ -3,7 +3,7 @@ from scipy.interpolate import interp1d
 import numpy as np
 from pyproj import CRS, Transformer
 
-def georefPts(t_lasvec, lasvec, lever_arm_body, q_sensor2body, trj_t, trj_xyz_map, trj_q_body2map):
+def georef_pts(t_lasvec, lasvec, lever_arm_body, q_sensor2body, trj_t, trj_xyz_map, trj_q_body2map):
     """
     Georeference points from sensor to mapping frame
     """
@@ -18,7 +18,7 @@ def georefPts(t_lasvec, lasvec, lever_arm_body, q_sensor2body, trj_t, trj_xyz_ma
 
     return xyz_map
 
-def correctLasVecICP(t_lasvec, lasvec, R_sensor2body, trj_t, trj_q_body2map, icp_vec, R_enu2ecef=None):
+def correct_laser_vector(t_lasvec, lasvec, R_sensor2body, trj_t, trj_q_body2map, icp_vec, R_enu2ecef=None):
     """
     Correct lasvec with ICP vector
     """
@@ -35,7 +35,7 @@ def correctLasVecICP(t_lasvec, lasvec, R_sensor2body, trj_t, trj_q_body2map, icp
     R_s2b = R.from_matrix(R_sensor2body)
     icp_sensor = R_s2b.inv().apply(icp_body)
 
-    lasvec_icp = lasvec + icp_sensor
+    lasvec_icp = lasvec - icp_sensor
 
     return lasvec_icp
 

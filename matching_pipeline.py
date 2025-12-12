@@ -3,20 +3,19 @@ import time
 import numpy as np
 import os
 import psutil
+from pathlib import Path
 
-from lib import stats, icp
-from lib.corres import concatenate_corres
-from lib.utils_LCD import getFeatures, load_model
+from lib import stats
+from lib.io import create_project_folder
+from lib.data_handling import Tile, Corres, concatenate_corres
+from lib.utils_LCD import get_features, load_model, feat_search
 from lib.tools import *
-from lib.vis import visKpts, visMatchPts
-from lib.filter import ransacFilter, reciprocityTest
-from lib.georef import R_enu2ecef
+from lib.keypoints import *
+from lib.vis import vis_kpts
+from lib.filter import ransac_filter, reciprocity_test
+from lib.icp import refine_cor_icp
 
 process = psutil.Process(os.getpid())
-
-
-def get_ram_usage_mb():
-    return process.memory_info().rss / 1024**2
 
 def run_pipeline(cloud1_path, cloud2_path, cfg):
     """
@@ -25,41 +24,42 @@ def run_pipeline(cloud1_path, cloud2_path, cfg):
     time0 = time.time()
 
     cfg['tile_id'] = f'{Path(cloud1_path).stem}_{Path(cloud2_path).stem}'
-    createProjectFolder(cfg['prj_folder'])
+    create_project_folder(cfg['prj_folder'])
 
     print(f"Processing  {cfg['tile_id']} ...")
-    print('Visualization set to '+str(cfg['visualize']))
+    print('Visualization set to '+str(cfg.get('visualize', False)))
 
-    # --------------------- LOAD MODEL -----------------------
+    # === LOAD MODEL ==================================================
     model, device = load_model(cfg)
     time1 = time.time()
 
-    # ------------------- PREPROCESSING ----------------------
+    # === PREPROCESSING ===============================================
     tile_a, tile_b = load_tiles(cloud1_path, cloud2_path, cfg)
     preprocess_tiles(tile_a, tile_b, cfg)
     time2 = time.time()
 
-    # ------------------ KEYPOINT DETECTION ------------------
+    # === KEYPOINT DETECTION ==========================================
     detect_keypoints(tile_a, tile_b, cfg)
     time3 = time.time()
 
-    # ------------------- DESCRIPTION ------------------------
+    # === DESCRIPTION =================================================
     compute_descriptors(tile_a, tile_b, model, device, cfg)
     time4 = time.time()
 
-    # ------------------- MATCHING ---------------------------
+    # === MATCHING ====================================================
     corres = match_features(tile_a, tile_b, cfg)
     time5 = time.time()
 
-    # ------------------- RANSAC -----------------------------
-    corres_rsc = filter_matches(corres, tile_a, tile_b, cfg)
+    # === RANSAC ======================================================
+    rsc_tile_ids = np.unique(tile_a.rsc_id)
+    corres_rsc = filter_matches(corres, rsc_tile_ids, cfg)
     time6 = time.time()
 
-    # ------------------- ICP -------------------------------
+    # === ICP =========================================================
     corres_icp = refine_icp(corres_rsc, tile_a, tile_b, cfg)
     time7 = time.time()
 
-    # ------------------- FINAL OUTPUT -----------------------
+    # === FINAL OUTPUT ===============================================
     build_output(corres, corres_rsc, corres_icp, tile_a, tile_b, cfg)
 
     stats_dict = {
@@ -93,16 +93,16 @@ def load_tiles(cloud1_path, cloud2_path, cfg):
 
 def preprocess_tiles(tile_a, tile_b, cfg):
     """
-    Preprocessing steps: overlap tiling, optional voxel tracing,
-    and optionally save tiles to csv. 
+    Preprocessing steps: overlap tiling, optional voxelization,
+    and optional tile saving to csv. 
     """
     print("Preprocessing data...")
-    prepOverlap(tile_a, tile_b, cfg)
+    prepare_overlap(tile_a, tile_b, cfg)
 
     if cfg.get('vox_size', 0) > 0:
         print("Initial voxelization...")
-        tile_a.voxTracing(cfg)
-        tile_b.voxTracing(cfg)
+        tile_a.apply_voxelization(cfg)
+        tile_b.apply_voxelization(cfg)
 
     if cfg.get('save_tiles', False):
         print("Saving tile to csv...")
@@ -119,22 +119,20 @@ def detect_keypoints(tile_a, tile_b, cfg):
     Applies optional downsampling and cleaning as in original script.
     """
     print("Keypoints estimation and tracking...")
-    kpts_a = issKpts(tile_a.xyz, cfg)
-    kpts_b = issKpts(tile_b.xyz, cfg)
+    kpts_a = detect_keypoints_iss(tile_a.xyz, cfg)
+    kpts_b = detect_keypoints_iss(tile_b.xyz, cfg)
     _, tile_a.kpts_id = tile_a.kdt.query(np.asarray(kpts_a.points), workers=-1)
     _, tile_b.kpts_id = tile_b.kdt.query(np.asarray(kpts_b.points), workers=-1)
 
     if 'max_kpts' in cfg and cfg['max_kpts'] is not None:
-        downSampleKpts(tile_a, cfg)
-        downSampleKpts(tile_b, cfg)
+        downsample_keypoints(tile_a, cfg)
+        downsample_keypoints(tile_b, cfg)
 
-    cleanKpts(tile_a, tile_b, cfg)
-    cleanKpts(tile_b, tile_a, cfg)
+    delete_useless_keypoints(tile_a, tile_b, cfg)
+    delete_useless_keypoints(tile_b, tile_a, cfg)
 
     if cfg.get('visualize', False):
-        visKpts(tile_a, tile_b, kpts_a, kpts_b)
-
-    print(f"RAM usage: {get_ram_usage_mb():.2f} MB")
+        vis_kpts(tile_a, tile_b, kpts_a, kpts_b)
 
 def compute_descriptors(tile_a, tile_b, model, device, cfg):
     """
@@ -142,9 +140,10 @@ def compute_descriptors(tile_a, tile_b, model, device, cfg):
     """
     print("Description...")
     with torch.no_grad():
-        tile_a.feat = getFeatures(tile_a, model, device, cfg)
-        tile_b.feat = getFeatures(tile_b, model, device, cfg)
-        print(f"RAM usage: {get_ram_usage_mb():.2f} MB")
+        tile_a.feat = get_features(tile_a, model, device, cfg)
+        tile_b.feat = get_features(tile_b, model, device, cfg)
+        assert getattr(tile_a, "kpts_id", None) is None or tile_a.feat.shape[0] == tile_a.kpts_id.shape[0]
+        assert getattr(tile_b, "kpts_id", None) is None or tile_b.feat.shape[0] == tile_b.kpts_id.shape[0]
     print(f"\033[FDescription... Done")
 
 def match_features(tile_a, tile_b, cfg):
@@ -152,60 +151,57 @@ def match_features(tile_a, tile_b, cfg):
     Candidate generation and feature-based nearest neighbor search.
     """
     print("Point cloud matching...")
-    getCandidates(tile_a, tile_b, cfg)
-    getCandidates(tile_b, tile_a, cfg)
+    get_candidates(tile_a, tile_b, cfg)
+    get_candidates(tile_b, tile_a, cfg)
 
-    tile_a.cor_id, feat_dist_a, _ = featSearch(tile_a, tile_b)
-    tile_b.cor_id, feat_dist_b, _ = featSearch(tile_b, tile_a)
-    print(f"RAM usage: {get_ram_usage_mb():.2f} MB")
+    tile_a.cor_id, feat_dist_a, _ = feat_search(tile_a, tile_b)
+    tile_b.cor_id, _, _ = feat_search(tile_b, tile_a)
+    tile_a.clear_features()
+    tile_b.clear_features()
 
-    try:
-        del tile_a.feat, tile_b.feat
-    except Exception:
-        pass
-
-    corres = buildCorres(tile_a, tile_b, feat_dist_a)
+    corres = Corres.from_tiles(tile_a, tile_b, feat_dist_a)
 
     if cfg.get('reciprocity_test', False):
         print("Reciprocity test...", end=' ')
-        mask = reciprocityTest(tile_a, tile_b)
-        kept_pct = 100 * np.sum(mask) / float(tile_a.kpts_id.shape[0]) if tile_a.kpts_id.shape[0] > 0 else 0.0
-        print(f"{kept_pct:.2f}% kept")
+        mask = reciprocity_test(tile_a, tile_b)
+        print(f"{100 * np.sum(mask) / float(tile_a.kpts_id.shape[0]) if tile_a.kpts_id.shape[0] > 0 else 0.0:.2f}% kept")
         corres = corres.apply_mask(mask)
-        print(f"RAM usage: {get_ram_usage_mb():.2f} MB")
 
-    try:
-        del tile_a.candidates, tile_b.candidates
-    except Exception:
-        pass
+    tile_a.clear_candidates()
+    tile_b.clear_candidates()
 
     return corres
 
-def filter_matches(corres, tile_a, tile_b, cfg):
+def filter_matches(corres, tile_ids, cfg):
     """
     Apply per-tile RANSAC filtering exactly like the original script.
     Returns concatenated corres_rsc array.
     """
     print("RANSAC filtering...")
     corres_rsc = None
-    unique_tiles = np.unique(tile_a.rsc_id)
-    for i in unique_tiles:
-        print(f"\033[FRansac filtering, tile {int(i)},", end=' ')
-        corres_tile = corres.apply_mask(corres.rsc_id == i)
+    min_inliers = cfg.get("rsc_min_inliers", 50)
 
-        idx_a_rsc = ransacFilter(corres_tile, cfg)
+    for tid in tile_ids:
+        print(f"\033[FRANSAC filtering, tile {tid}...", end=" ")
 
-        if idx_a_rsc.shape[0] < 50:
-            print(f"Warning tile {int(i)} has <50 matches -> skipping")
+        tile_mask = (corres.rsc_id == tid)
+        corres_tile = corres.apply_mask(tile_mask)
+
+        idx = ransac_filter(corres_tile, cfg)
+
+        if idx.shape[0] < min_inliers:
+            print(f"skipped (<{min_inliers} inliers)")
             continue
-        corres_filtered = corres_tile.apply_mask(idx_a_rsc[:, 0])
-        if corres_rsc is None:
-            corres_rsc = corres_filtered
-        else:
-            corres_rsc = concatenate_corres(corres_rsc, corres_filtered)
 
-    print("RANSAC Done")
-    return corres_rsc
+        filtered_tile = corres_tile.apply_mask(idx[:, 0])
+
+        corres_rsc = filtered_tile if corres_rsc is None else concatenate_corres(corres_rsc, filtered_tile)
+    if corres_rsc is None:
+        print("RANSAC resulted in zero matches.")
+        return Corres.empty()
+    else:
+        print("RANSAC Done")
+        return corres_rsc
 
 def refine_icp(corres_rsc, tile_a, tile_b, cfg):
     """
@@ -213,31 +209,32 @@ def refine_icp(corres_rsc, tile_a, tile_b, cfg):
     Returns corres_icp (concatenated per-tile arrays).
     """
     print("ICP refinement...")
+    if corres_rsc is None or corres_rsc.idx_a.size == 0:
+        print("No matches to refine with ICP.")
+        return Corres.empty()
+
     corres_icp = None
-    unique_tiles = np.unique(tile_a.rsc_id)
+    tile_ids = np.unique(tile_a.rsc_id)
 
-    for i in unique_tiles:
-        print(f"\033[FICP refinement, tile {int(i)}...")
-        corres_tile = corres_rsc.apply_mask(corres_rsc.rsc_id == i)
-        icp.corrICP(tile_a, tile_b, corres_tile, cfg)
-        if corres_icp is None:
-            corres_icp = corres_tile
-        else:
-            corres_icp = concatenate_corres(corres_icp, corres_tile)
+    for tid in tile_ids:
+        print(f"\033[FICP refinement, tile {tid}...")
 
-    print(f"RAM usage: {get_ram_usage_mb():.2f} MB")
+        tile_mask = (corres_rsc.rsc_id == tid)
+        corres_tile = corres_rsc.apply_mask(tile_mask)
+
+        corres_tile = refine_cor_icp(tile_a, tile_b, corres_tile, cfg)
+
+        corres_icp = corres_tile if corres_icp is None else concatenate_corres(corres_icp, corres_tile)
+
     return corres_icp
 
 def build_output(corres, corres_rsc, corres_icp, tile_a, tile_b, cfg):
     """
     Wrap final output generation and stats building.
     """
-    icp_vec = -corres_icp.icp_vec
 
-    R_enu2ecef_mat = None
-    buildCorresFile(corres_rsc.to_array(), tile_a, tile_b, cfg, icp_vec, R_enu2ecef_mat)
+    build_corres_file(corres_icp, tile_a, tile_b, cfg)
 
-    stats_raw = stats_rsc = stats_icp = None
     if cfg.get('save_stats', False):
         print("Building stats & plots...")
         stats_raw = stats.compute_stats(corres.to_array(), cfg['tile_id'])

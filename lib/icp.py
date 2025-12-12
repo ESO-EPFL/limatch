@@ -2,9 +2,11 @@
 import numpy as np
 import open3d as o3d
 
-def runICP(target, ref, cfg): 
+from lib.data_handling import Corres, Tile
+
+def run_icp(target, ref, cfg): 
     '''
-    Run ICP on two point clouds and return the transformation matrix aligning target to ref
+    Run ICP on two point clouds and return the translation vector that align target to ref (target + icp_vec ≃ ref)
     '''
     icp = o3d.pipelines.registration.registration_icp(target, ref, cfg['icp_thresh'],
                                                       estimation_method=o3d.pipelines.registration.TransformationEstimationPointToPoint(),
@@ -12,16 +14,17 @@ def runICP(target, ref, cfg):
                                                                                                                 ,relative_fitness=cfg['icp_conv']
                                                                                                                 ,relative_rmse=cfg['icp_conv']))
         
-    return icp
+    return icp.transformation[:3,-1]
 
-def corrICP(tile_k, tile_t, corr, cfg):
+def refine_cor_icp(tile_k: Tile, tile_t: Tile, corr: Corres, cfg):
     '''
     Run ICP on each pair of corresponding points and update the correspondence matrix
     Transormation aligns target patch to key patch
     '''
+    corr_icp = corr.deep_copy()
     for i in range(corr.xyz_a.shape[0]):
-        xyz_k = corr.xyz_a[i,:]
-        xyz_t = corr.xyz_b[i,:]
+        xyz_k = corr_icp.xyz_a[i,:]
+        xyz_t = corr_icp.xyz_b[i,:]
 
         patch_k = tile_k.xyz[tile_k.kdt.query_ball_point(xyz_k, cfg['icp_patch_r'])] - xyz_k 
         patch_t = tile_t.xyz[tile_t.kdt.query_ball_point(xyz_t, cfg['icp_patch_r'])] - xyz_t
@@ -36,11 +39,12 @@ def corrICP(tile_k, tile_t, corr, cfg):
             pcd_k = pcd_k.voxel_down_sample(cfg['icp_vox_s'])
             pcd_t = pcd_t.voxel_down_sample(cfg['icp_vox_s'])
 
-        icp = runICP(pcd_k, pcd_t, cfg)
+        icp_vec = run_icp(pcd_k, pcd_t, cfg)
+        xyz_t = xyz_t + icp_vec
 
-        xyz_t = xyz_t + icp.transformation[:3,-1]
-        corr.xyz_b[i] = xyz_t
-        corr.icp_vec[i] = icp.transformation[:3,-1]
-        corr.d_xyz[i] = np.linalg.norm(xyz_k - xyz_t)
+        corr_icp.icp_vec[i] = icp_vec
+        corr_icp.xyz_b[i] = xyz_t
+        corr_icp.d_xyz[i] = np.linalg.norm(xyz_k - xyz_t)
 
+    return corr_icp
         

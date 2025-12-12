@@ -1,82 +1,13 @@
 import numpy as np
-import open3d as o3d
-from scipy.spatial import KDTree
 from scipy.interpolate import interp1d
 from scipy.spatial.transform import Rotation as R, Slerp
 
-import faiss
-from pathlib import Path
-import laspy as lp
-from lib.georef import correctLasVecICP
 from pyproj import Transformer
-from scipy.spatial.transform import Rotation as R
 
-from lib.corres import Corres
+from lib.georef import correct_laser_vector
+from lib.data_handling import Corres, Tile
 
-
-def createProjectFolder(path):
-    '''
-    Create the folder structure for the project
-    '''
-    Path(path).mkdir(parents=True, exist_ok=True)
-    Path(path+"tiles").mkdir(parents=True, exist_ok=True) 
-    Path(path+"plots").mkdir(parents=True, exist_ok=True) 
-    Path(path+"cor_outputs").mkdir(parents=True, exist_ok=True) 
-
-def loadAsciiCloud(file, cfg):
-    """
-    Load a point cloud from an ASCII file
-    """
-
-    if 'delimiter' in cfg and cfg['delimiter'] is not None:
-        raw = np.loadtxt(file, delimiter=cfg['delimiter'], skiprows=cfg['header'])
-    else:
-        raw = np.loadtxt(file, skiprows=cfg['header'])
-    
-    xyz =  raw[:, cfg['xyz_col']]
-
-    if 't_col' in cfg and cfg['t_col'] is not None:
-        time = raw[:, cfg['t_col']] 
-
-    else:
-        time = np.zeros((xyz.shape[0], 1))
-
-    if 'lasvec_col' in cfg and cfg['lasvec_col'] is not None:
-        las_vec = raw[:, cfg['lasvec_col']]
-
-    else:
-        las_vec = np.zeros((xyz.shape[0], 3))
-
-    return xyz, time, las_vec
-
-def loadLasCloud(file, cfg):
-    """
-    Load a point cloud from a LAS file
-    """
-    has_extraDim = False
-    if 'extraDim' in cfg and cfg['extraDim'] is not None:
-        has_extraDim = True
-
-    with lp.open(file) as fh:
-        las = fh.read()
-
-        has_gps_time = "gps_time" in [d.name for d in las.point_format.dimensions]
-
-        if has_gps_time:
-            time = las.gps_time
-        else:
-            time = np.zeros((las.xyz.shape[0], 1))
-
-        if has_extraDim:
-            extra = np.array([las[d] for d in cfg['extraDim']]).T
-        else:
-            extra = np.zeros((las.xyz.shape[0], 0))
-
-        las_vec = np.zeros((las.xyz.shape[0], 3))
-
-    return las.xyz, time, las_vec, extra
-
-def prepOverlap(tile_a, tile_b, cfg):
+def prepare_overlap(tile_a: Tile, tile_b: Tile, cfg):
     '''
     Prepare the data for tiling by filtering out non-overlapping sections and assigning a tile id to each point
     '''
@@ -113,11 +44,13 @@ def prepOverlap(tile_a, tile_b, cfg):
         tile_a.rsc_id = kept_id_a.astype(np.uint16)
         tile_b.rsc_id = kept_id_b.astype(np.uint16)
 
-        tile_a.filterByMask(kept_id_a > 0)
-        tile_b.filterByMask(kept_id_b > 0)
+        tile_a.apply_mask(kept_id_a > 0)
+        tile_b.apply_mask(kept_id_b > 0)
 
     else:
-        print(f"No tiling...")
+        kept_id_a = np.zeros((tile_a.xyz.shape[0],), dtype=np.uint8)
+        kept_id_b = np.zeros((tile_b.xyz.shape[0],), dtype=np.uint8)
+        print("No tiling... (all points kept)")
 
     shift = tile_a.xyz.mean(axis=0)
 
@@ -128,364 +61,47 @@ def prepOverlap(tile_a, tile_b, cfg):
     tile_a.xyz = (tile_a.xyz - shift).astype(np.float32)
     tile_b.xyz = (tile_b.xyz - shift).astype(np.float32)
 
-    tile_a.kdt = KDTree(tile_a.xyz)
-    tile_b.kdt = KDTree(tile_b.xyz)
-    print(f"{np.max(kept_id_a)} valid tiles generated...")
+    tile_a.rebuild_kdt()
+    tile_b.rebuild_kdt()
 
-class Tile:
-    def __init__(self, time, xyz, lasvec, extraData=None):
-        """
-        Tile object storing pointwise data and small helpers.
-        Backwards-compatible with previous Tile: same attribute names.
+    try:
+        max_tile = int(np.max(kept_id_a))
+    except Exception:
+        max_tile = 0
+    print(f"{max_tile} valid tiles generated...")
 
-        Persistent (kept unless explicitly cleared):
-            - time
-            - xyz
-            - las_vec
-            - rsc_id
-            - extraData
-            - shift (may be set later)
-            - kdt
-
-        Ephemeral (created/cleared by pipeline steps):
-            - kpts_id
-            - n_kpts
-            - feat
-            - candidates
-            - cor_id
-        """
-        self.time = time
-        self.xyz = np.asarray(xyz)
-        self.las_vec = lasvec.astype(np.float32)
-        self.rsc_id = np.ones((self.xyz.shape[0],), dtype=np.uint16)
-
-        self.kdt = KDTree(self.xyz)
-
-        if extraData is not None:
-            self.extraData = extraData
-        else:
-            self.extraData = np.empty((self.xyz.shape[0], 0))
-
-    @classmethod
-    def fromASCII(cls, file, cfg):
-        """
-        Load point cloud data from an ASCII file and return Tile.
-        """
-        xyz, time, las_vec = loadAsciiCloud(file, cfg)
-        return cls(time, xyz, las_vec)
-
-    @classmethod
-    def fromLAS(cls, file, cfg):
-        """
-        Load point cloud data from a LAS file and return Tile.
-        """
-        xyz, time, las_vec, extra = loadLasCloud(file, cfg)
-        return cls(time, xyz, las_vec, extra)
-
-    def apply_mask(self, mask):
-        """
-        Apply a boolean mask or integer-index array to the tile to keep only
-        selected points. Guarantees pointwise consistency and rebuilds KDTree.
-        Also invalidates ephemeral attributes that refer to point indices.
-
-        Parameters
-        ----------
-        mask : array-like
-            - boolean array of length N (where N == len(self.xyz))
-            - or an integer index array of selected indices
-        """
-        if mask is None:
-            return
-
-        mask = np.asarray(mask)
-
-        # If mask contains integers (indices), convert to boolean mask
-        if np.issubdtype(mask.dtype, np.integer):
-            idx = mask
-            bool_mask = np.zeros((self.xyz.shape[0],), dtype=bool)
-            bool_mask[idx] = True
-            mask = bool_mask
-        else:
-            if mask.dtype != bool:
-                mask = mask.astype(bool)
-            if mask.shape[0] != self.xyz.shape[0]:
-                raise AssertionError("Mask length must match number of points in xyz")
-
-        # Apply mask to all pointwise persistent arrays
-        self.xyz = self.xyz[mask]
-        if hasattr(self, "time") and self.time is not None and self.time.shape[0] == mask.shape[0]:
-            self.time = self.time[mask]
-        if hasattr(self, "las_vec") and self.las_vec is not None and self.las_vec.shape[0] == mask.shape[0]:
-            self.las_vec = self.las_vec[mask]
-        if hasattr(self, "rsc_id") and self.rsc_id is not None and self.rsc_id.shape[0] == mask.shape[0]:
-            self.rsc_id = self.rsc_id[mask]
-        if hasattr(self, "extraData") and self.extraData is not None and self.extraData.shape[0] == mask.shape[0]:
-            self.extraData = self.extraData[mask]
-
-        self.rebuild_kdt()
-
-        self.clear_keypoint_data()
-        self.clear_features()
-        self.clear_candidates()
-        self.clear_correspondences()
-
-    def filterByMask(self, mask):
-        """
-        Backwards-compatible alias for existing code: call apply_mask.
-        """
-        self.apply_mask(mask)
-
-    def rebuild_kdt(self):
-        """Rebuild KDTree from current xyz."""
-        # protect against empty cloud
-        if self.xyz.shape[0] == 0:
-            self.kdt = KDTree(np.empty((0, 3)))
-        else:
-            self.kdt = KDTree(self.xyz)
-
-    # -------------------------
-    # Voxelization wrapper
-    # -------------------------
-    def apply_voxelization(self, cfg):
-        """
-        Thin wrapper that voxel-downsamples the point cloud (same semantics as old voxTracing)
-        while preserving consistency via apply_mask. This method does not change any ephem values
-        except by invalidation through apply_mask.
-        """
-        # create a temporary pointcloud and downsample (reuse previous algorithm)
-        pcd_raw = o3d.geometry.PointCloud()
-        pcd_raw.points = o3d.utility.Vector3dVector(self.xyz)
-
-        pcd_down = pcd_raw.voxel_down_sample(cfg['vox_size'])
-        print(f"Raw: {self.xyz.shape[0]} pts -> Voxelized: {pcd_down.points.__len__()} pts")
-
-        # find nearest ids of voxel centers in original xyz
-        # rebuild a temporary KDTree if necessary
-        if pcd_down.points.__len__() == 0:
-            # nothing left after voxelization
-            mask = np.zeros((self.xyz.shape[0],), dtype=bool)
-        else:
-            _, id_vox = self.kdt.query(np.asarray(pcd_down.points), k=1, workers=-1)
-            mask = np.zeros((self.xyz.shape[0],), dtype=bool)
-            mask[id_vox] = True
-
-        # apply mask (this will rebuild kdt and clear ephemeral attributes)
-        self.apply_mask(mask)
-
-    # keep existing method name for compatibility, call new wrapper
-    def voxTracing(self, cfg):
-        self.apply_voxelization(cfg)
-
-    # -------------------------
-    # Ephemeral attribute helpers
-    # -------------------------
-    def clear_features(self):
-        """Delete descriptor matrix if present."""
-        if hasattr(self, "feat"):
-            try:
-                delattr = False
-                # try to delete to free memory
-                del self.feat
-            except Exception:
-                # fallback: set to None
-                self.feat = None
-
-    def clear_candidates(self):
-        """Delete candidate lists if present."""
-        if hasattr(self, "candidates"):
-            try:
-                del self.candidates
-            except Exception:
-                self.candidates = None
-
-    def clear_correspondences(self):
-        """Delete correspondence id mapping (cor_id) if present."""
-        if hasattr(self, "cor_id"):
-            try:
-                del self.cor_id
-            except Exception:
-                self.cor_id = None
-
-    def clear_keypoint_data(self):
-        """
-        Remove keypoint-related data that index into xyz (kpts_id and related fields).
-        Called whenever xyz is changed.
-        """
-        if hasattr(self, "kpts_id"):
-            try:
-                del self.kpts_id
-            except Exception:
-                self.kpts_id = np.array([], dtype=int)
-        if hasattr(self, "n_kpts"):
-            try:
-                del self.n_kpts
-            except Exception:
-                self.n_kpts = 0
-
-    # -------------------------
-    # Convenience checks / assertions
-    # -------------------------
-    def assert_pointwise_consistency(self):
-        """Run quick consistency checks (useful for debugging)."""
-        n = self.xyz.shape[0]
-        if hasattr(self, "time"):
-            assert self.time.shape[0] == n, "time length mismatch with xyz"
-        if hasattr(self, "las_vec"):
-            assert self.las_vec.shape[0] == n, "las_vec length mismatch with xyz"
-        if hasattr(self, "rsc_id"):
-            assert self.rsc_id.shape[0] == n, "rsc_id length mismatch with xyz"
-        if hasattr(self, "extraData"):
-            assert self.extraData.shape[0] == n, "extraData length mismatch with xyz"
-
-    # -------------------------
-    # String repr for debugging
-    # -------------------------
-    def __repr__(self):
-        n = self.xyz.shape[0]
-        parts = [f"Tile(n_pts={n})"]
-        if hasattr(self, "kpts_id"):
-            parts.append(f"kpts={len(self.kpts_id)}")
-        if hasattr(self, "feat") and self.feat is not None:
-            parts.append(f"feat_shape={getattr(self, 'feat').shape}")
-        return "<" + " ".join(parts) + ">"
-
-def issKpts(xyz,cfg):
-    """
-    Compute keypoints from a point cloud
-    """
-    pcd = o3d.geometry.PointCloud()
-    pcd.points = o3d.utility.Vector3dVector(xyz)
-
-    if cfg['iss_vox_s'] > 0:
-        pcd = pcd.voxel_down_sample(cfg['iss_vox_s'])
-
-    return o3d.geometry.keypoint.compute_iss_keypoints(pcd,
-                                                    salient_radius=cfg['iss_sln_r'],
-                                                    non_max_radius=cfg['iss_nm_r'],
-                                                    gamma_21=cfg['iss_g21'],
-                                                    gamma_32=cfg['iss_g32'],
-                                                    min_neighbors=cfg['iss_min_n'])
-
-def downSampleKpts(tile, cfg):
-    ''' 
-    Downsample keypoints if number of keypoints per tile is above max value from config
-    '''
-    filt_kpts_id = []
-    
-    print(f"Initial kpts number: {len(tile.kpts_id)}")
-    print(f"Filtering keypoints to {cfg['max_kpts']} per tile...")
-    for i in np.unique(tile.rsc_id):
-        
-        kpts_id_tile_i = tile.kpts_id[tile.rsc_id[tile.kpts_id] == i]
-        if len(kpts_id_tile_i) > cfg['max_kpts']:
-            kpts_id_tile_i = np.random.choice(kpts_id_tile_i, cfg['max_kpts'], replace=False)
-        filt_kpts_id.extend(kpts_id_tile_i)
-
-    tile.kpts_id = np.array(filt_kpts_id)
-    tile.n_kpts = len(tile.kpts_id)
-
-def cleanKpts(tile_key, tile_target, cfg):
-    """
-    Check if keypoints have at least one target keypoint in vicinity
-    If not, delete it
-    """
- 
-    kdt = KDTree(tile_target.xyz[tile_target.kpts_id])
-    dist, _ = kdt.query(tile_key.xyz[tile_key.kpts_id], workers=-1)
-
-    tile_key.kpts_id = tile_key.kpts_id[dist < 2*cfg['uncertainty_r']]
-    tile_key.n_kpts = len(tile_key.kpts_id)
-    print(f"Final kpts number: {tile_key.n_kpts}")
-
-def getCandidates(tile_key, tile_target, cfg):
-    """
-    Generate list of candidates for each keypoint to match,
-    using batching and compact NumPy arrays to save memory.
-    """
-
-    kdt = KDTree(tile_target.xyz[tile_target.kpts_id])
-    query_pts = tile_key.xyz[tile_key.kpts_id]
-
-    batch_size = cfg["main_batch"]  # configurable batch size
-    radius = 2 * cfg["uncertainty_r"]
-
-    candidates = []
-    for start in range(0, query_pts.shape[0], batch_size):
-        end = min(start + batch_size, query_pts.shape[0])
-        # Run query_ball_point on this batch
-        batch_res = kdt.query_ball_point(query_pts[start:end], radius, workers=-1)
-        # Convert each sublist into a compact NumPy array
-        batch_res = [np.array(r, dtype=np.uint32) for r in batch_res]
-        candidates.extend(batch_res)
-
-    tile_key.candidates = candidates
-
-def featSearch(tile_key, tile_target):
-    """
-    Find nearest neighbors in feature space for a set of keypoints
-    """
-    candidate = tile_key.candidates
-
-    feats_k = tile_key.feat
-    feats = tile_target.feat
-
-    f_dist = np.empty((feats_k.shape[0]))
-    idx_t = np.empty((feats_k.shape[0]), dtype=np.uint32)  
-
-    for i in range(len(candidate)):
-        #Build idx with only candidate points for kpt i
-        flat_idx = faiss.IndexFlatL2(feats.shape[1])    
-        flat_idx.add(feats[candidate[i]])   
-        #Find nearest neigh in feat space for kpt i
-        f_dist[i], idx_local = flat_idx.search(feats_k[i].reshape(1,-1), 1)
-        #Find id of the candidate identified as match in the original cloud
-        idx_t[i] = tile_target.kpts_id[candidate[i][idx_local]]
-
-    return idx_t, f_dist, tile_target.xyz[idx_t]
-
-
-def buildCorres(tile_key, tile_tgt, feat_dist):
-    """
-    Create correspondence dataclass.
-    """
-    xyz_a = tile_key.xyz[tile_key.kpts_id]
-    xyz_b = tile_tgt.xyz[tile_key.cor_id]
-
-    return Corres(
-        idx_a = tile_key.kpts_id.copy(),
-        idx_b = tile_key.cor_id.copy(),
-        d_xyz = np.linalg.norm(xyz_a - xyz_b, axis=1),
-        d_feat = feat_dist.copy(),
-        xyz_a = xyz_a,
-        xyz_b = xyz_b,
-        rsc_id = tile_key.rsc_id[tile_key.kpts_id].copy(),
-        icp_vec = np.zeros((xyz_a.shape[0], 3), dtype=float),
-    )
-
-def buildCorresFile(corres, tile_a, tile_b, cfg, icp_vec, R_enu2ecef=None):
+def build_corres_file(c: Corres, tile_a: Tile, tile_b: Tile, cfg):
     """
     Build and save correspondences file for RANSAC and ICP stages.
     """
-    ind_a = corres[:, 0].astype(int)
-    ind_b = corres[:, 1].astype(int)
-    time_a = tile_a.time[ind_a].reshape(-1, 1)
-    time_b = tile_b.time[ind_b].reshape(-1, 1)
+    if c is None or c.idx_a.shape[0] == 0:
+        print("No correspondences to write.")
+        return
+    idx_a = c.idx_a.astype(int)
+    idx_b = c.idx_b.astype(int)
+    time_a = tile_a.time[idx_a].reshape(-1, 1)
+    time_b = tile_b.time[idx_b].reshape(-1, 1)
+
+    icp_vec = c.icp_vec
+
+    if cfg.get("simulateLasVec", False):
+        print("Simulating laser vectors from trajectory...")
+        las_vec_a, las_vec_b = simulate_las_vec(
+            time_a.reshape(-1),
+            time_b.reshape(-1),
+            tile_a.xyz[idx_a]+ tile_a.shift,
+            tile_b.xyz[idx_b]+ tile_b.shift,
+            cfg['trj_path'],
+            cfg['R_sensor2body'],
+            np.array(cfg.get('lever_arm', [0.0, 0.0, 0.0])),
+            cfg['point_epsg'])
+    else:
+        print("Fetching laser vectors from input...")
+        las_vec_a = tile_a.las_vec[idx_a]
+        las_vec_b = tile_b.las_vec[idx_b]
+
 
     if cfg['adjustLasVec']:
-        if cfg.get("simulateLasVec", False):
-            print("Simulating laser vectors for output...")
-            las_vec_a, las_vec_b = simulateLasVec(
-                time_a.reshape(-1),
-                time_b.reshape(-1),
-                tile_a.xyz[ind_a]+ tile_a.shift,
-                tile_b.xyz[ind_b]+ tile_b.shift,
-                cfg['trj_path'],
-                cfg['R_sensor2body'],
-                np.array(cfg.get('lever_arm', [0.0, 0.0, 0.0])),
-                cfg['point_epsg'])
-        else:
-            las_vec_a = tile_a.las_vec[ind_a]
-            las_vec_b = tile_b.las_vec[ind_b]
         out_data = np.concatenate((time_b, time_a, las_vec_b, las_vec_a), axis=1)
         out_data = out_data[out_data[:, 0].argsort()]
         np.savetxt(cfg['prj_folder'] + f"cor_outputs/LiDAR_p2p_noRefinement_{cfg['tile_id']}.txt",
@@ -497,7 +113,8 @@ def buildCorresFile(corres, tile_a, tile_b, cfg, icp_vec, R_enu2ecef=None):
         trj_t = trj[:, 0]
         trj_q = trj[:, 4:]
         trj_q = trj_q[:, [1, 2, 3, 0]]  # w,x,y,z -> x,y,z,w according to Scipy notation
-        las_vec_a = correctLasVecICP(time_a.reshape(-1), las_vec_a, cfg['R_sensor2body'], trj_t, trj_q, icp_vec, R_enu2ecef)
+
+        las_vec_a = correct_laser_vector(time_a.reshape(-1), las_vec_a, cfg['R_sensor2body'], trj_t, trj_q, icp_vec, None)
         out_data = np.concatenate((time_b, time_a, las_vec_b, las_vec_a), axis=1)
         out_data = out_data[out_data[:, 0].argsort()]
         np.savetxt(cfg['prj_folder'] + f"cor_outputs/LiDAR_p2p_{cfg['tile_id']}.txt",
@@ -505,52 +122,17 @@ def buildCorresFile(corres, tile_a, tile_b, cfg, icp_vec, R_enu2ecef=None):
                     fmt='%.9f, %.9f, %.4f, %.4f, %.4f, %.4f, %.4f, %.4f')
 
     else:
-        xyz_a = tile_a.xyz[ind_a] + tile_a.shift
-        xyz_b = tile_b.xyz[ind_b] + tile_b.shift
+        xyz_a = tile_a.xyz[idx_a] + tile_a.shift
+        xyz_b = tile_b.xyz[idx_b] + tile_b.shift
+     
+        out_data = np.concatenate((time_b, time_a, xyz_b, xyz_a, icp_vec), axis=1)
+        out_data = out_data[out_data[:, 0].argsort()]
+        np.savetxt(cfg['prj_folder'] + f"cor_outputs/LiDAR_p2p.txt",
+                    out_data,
+                    fmt='%.9f, %.9f,  %.3f, %.3f, %.3f, %.3f, %.3f, %.3f, %.3f, %.3f, %.3f',
+                    header='time_b, time_a, x_b, y_b, z_b, x_a, y_a, z_a, icp_x, icp_y, icp_z (xyz_a - icp_vec_a = refined xyz_a)')
 
-        if cfg['extendedLasData']:
-            extra_data_a = tile_a.extraData[ind_a]
-            extra_data_b = tile_b.extraData[ind_b]
-            out_data = np.concatenate((time_b, time_a, xyz_b, xyz_a, icp_vec, extra_data_b, extra_data_a), axis=1)
-            out_data = out_data[out_data[:, 0].argsort()]
-            np.savetxt(cfg['prj_folder'] + f"cor_outputs/LiDAR_p2p_{cfg['tile_id']}.txt",
-                        out_data,
-                        header='time_b, time_a, x_b, y_b, z_b, x_a, y_a, z_a, icp_x, icp_y, icp_z, extra_b (multi col), extra_a (multi col), (xyz_a + icp_vec_a = refined xyz_a)',)
-        else:        
-            out_data = np.concatenate((time_b, time_a, xyz_b, xyz_a, icp_vec), axis=1)
-            out_data = out_data[out_data[:, 0].argsort()]
-            np.savetxt(cfg['prj_folder'] + f"cor_outputs/LiDAR_p2p.txt",
-                        out_data,
-                        fmt='%.9f, %.9f,  %.3f, %.3f, %.3f, %.3f, %.3f, %.3f, %.3f, %.3f, %.3f',
-                        header='time_b, time_a, x_b, y_b, z_b, x_a, y_a, z_a, icp_x, icp_y, icp_z (xyz_a + icp_vec_a = refined xyz_a)')
-
-def removeBoundaryPts(pcd, keypts, buffer):
-    """
-    Remove keypoints that are to close to the tile boundary to avoid border effect
-    """
-    bbox = pcd.get_axis_aligned_bounding_box()
-    boundary_pts = np.asarray(bbox.get_box_points())
-
-    for i in range(boundary_pts.shape[0]):
-
-        if boundary_pts[i, 0] == bbox.get_min_bound()[0]:
-            boundary_pts[i, 0] = boundary_pts[i, 0] + buffer
-        else:
-            boundary_pts[i, 0] = boundary_pts[i, 0] - buffer
-
-        if boundary_pts[i, 1] == bbox.get_min_bound()[1]:
-            boundary_pts[i, 1] = boundary_pts[i, 1] + buffer
-        else:
-            boundary_pts[i, 1] = boundary_pts[i, 1] - buffer
-
-    small_box = o3d.geometry.PointCloud()
-    small_box.points = o3d.utility.Vector3dVector(boundary_pts)
-    small_box = small_box.get_axis_aligned_bounding_box()
-
-    cropped_kpts = keypts.crop(small_box)
-    return cropped_kpts
-
-def simulateLasVec(time_a, time_b, xyz_a, xyz_b, trj_path, R_s2b, a_s, point_epsg):
+def simulate_las_vec(time_a, time_b, xyz_a, xyz_b, trj_path, R_s2b, a_s, point_epsg):
     """
     Simulate laser vectors from trajectory (in ECEF) and tile points (any EPSG).
 

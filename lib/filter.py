@@ -1,13 +1,15 @@
 import numpy as np
 import open3d as o3d
 
-def ransacFilter(cor, cfg):
+from lib.data_handling import Corres, Tile
+
+def ransac_filter(c: Corres, cfg):
     """
     RANSAC filter based on correspondences
     """
-    n_corr = cor.idx_a.shape[0]
-    kpts_xyz = cor.xyz_a
-    target_xyz = cor.xyz_b
+    n_corr = c.idx_a.shape[0]
+    kpts_xyz = c.xyz_a
+    target_xyz = c.xyz_b
     thresh = cfg['rsc_thr']
     
     correspondences_index = np.ones(
@@ -40,7 +42,7 @@ def ransacFilter(cor, cfg):
         print(f"inliers: {int(100*filt_cor.shape[0]/n_corr)}% ")
     return filt_cor
 
-def reciprocityTest(tile_a, tile_b):
+def reciprocity_test(tile_a: Tile, tile_b: Tile):
     """
     Compute reciprocal correspondences between tile_a and tile_b.
 
