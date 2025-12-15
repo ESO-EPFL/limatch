@@ -5,6 +5,10 @@ import open3d as o3d
 from scipy.spatial import KDTree
 from lib.io import load_ascii_cloud, load_las_cloud
 
+import logging
+logger = logging.getLogger("LiMatch")
+from lib.logger import log_sub, log_sub_sub
+
 class Tile:
     def __init__(self, time, xyz, lasvec):
         """
@@ -110,7 +114,7 @@ class Tile:
         pcd_raw.points = o3d.utility.Vector3dVector(self.xyz)
 
         pcd_down = pcd_raw.voxel_down_sample(cfg['vox_size'])
-        print(f"Raw: {self.xyz.shape[0]} pts -> Voxelized: {pcd_down.points.__len__()} pts")
+        log_sub_sub(logger, f"voxelized from {self.xyz.shape[0]} to {pcd_down.points.__len__()} pts ({100*pcd_down.points.__len__()/self.xyz.shape[0]:.2f}%)")
 
         mask = np.zeros((self.xyz.shape[0],), dtype=bool)
 

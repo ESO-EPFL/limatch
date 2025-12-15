@@ -1,7 +1,7 @@
 import math
 import torch
 import numpy as np
-import logging
+
 from pathlib import Path
 import faiss
 
@@ -9,7 +9,9 @@ from submodules.lcd.lcd import models
 
 from lib.data_handling import Tile
 
-log = logging.getLogger(__name__)
+import logging
+logger = logging.getLogger("LiMatch")
+from lib.logger import log_progress, log_sub, log_sub_sub
 
 def load_model(cfg):
     """
@@ -19,21 +21,21 @@ def load_model(cfg):
       - {"model": state_dict}
     Ensures model.eval() and torch.no_grad() usage.
     """
+    log_progress(logger, 0, "Model setup")
     model_path = Path(cfg["nn_path"])
     if not model_path.exists():
         raise FileNotFoundError(f"Model checkpoint not found: {model_path}")
 
     if torch.cuda.is_available():
         device = torch.device("cuda")
-        log.info("Using CUDA for descriptor inference.")
+        log_sub(logger, "Using CUDA for descriptor inference.")
     else:
         device = torch.device("cpu")
-        log.warning("CUDA not available. Running on CPU. Expect slower descriptor inference.")
+        log_sub(logger, "CUDA not available. Running on CPU. Expect slower descriptor inference.")
 
     model = models.PointNetAutoencoder(256, 6, 6, True)
 
-    log.info(f"Loading descriptor model weights from: {model_path}")
-
+    log_sub(logger, f"Loading from: {model_path}")
     try:
         checkpoint = torch.load(model_path, map_location=device)
     except Exception as e:
@@ -41,12 +43,12 @@ def load_model(cfg):
 
     if isinstance(checkpoint, dict) and "model" in checkpoint:
         state = checkpoint["model"]
-        log.info("Loaded nested checkpoint with key 'model'.")
+        log_sub(logger, "Loaded nested checkpoint with key 'model'.")
     elif isinstance(checkpoint, dict) and all(
         isinstance(v, torch.Tensor) for v in checkpoint.values()
     ):
         state = checkpoint
-        log.info("Loaded direct state_dict checkpoint.")
+        log_sub(logger, "Loaded direct state_dict checkpoint.")
     else:
         raise ValueError(
             f"Unrecognized checkpoint structure. Expected state_dict or dict with 'model'. "
@@ -62,7 +64,7 @@ def load_model(cfg):
     model.to(device)
     model.eval()
 
-    log.info("Descriptor model successfully loaded and set to eval() mode.")
+    log_sub(logger, "Descriptor model successfully loaded and set to eval() mode.")
     return model, device
 
 def extract_patches(tile, cfg, idx):
@@ -140,7 +142,7 @@ def compute_lcd(patches, model, batch_size, device):
 def get_features(tile: Tile, model, device, cfg):
     feat = np.zeros((tile.kpts_id.shape[0], 256),dtype='float32')
     for i in range(0, tile.kpts_id.shape[0], cfg['main_batch']):
-        print(f"\033[FDescription {int(100*i/tile.kpts_id.shape[0])}%...")
+        log_sub_sub(logger, f"batch {i+1}/{int(np.ceil(tile.kpts_id.shape[0]/cfg['main_batch']))}...")
         patches = extract_patches(tile, cfg, i)
         feat[i:i+cfg['main_batch']] = compute_lcd(patches, model, cfg['lcd_batch'], device)
     del patches

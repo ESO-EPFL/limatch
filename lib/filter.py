@@ -3,6 +3,10 @@ import open3d as o3d
 
 from lib.data_handling import Corres, Tile
 
+import logging
+logger = logging.getLogger("LiMatch")
+from lib.logger import log_sub
+
 def ransac_filter(c: Corres, cfg):
     """
     RANSAC filter based on correspondences
@@ -37,9 +41,7 @@ def ransac_filter(c: Corres, cfg):
     permutations = np.where(filt_cor[:,0]==filt_cor[:,1])
     filt_cor = filt_cor[permutations]
     if n_corr == 0:
-        print("                           !Warning at least 1 ransac filter failed!")
-    else: 
-        print(f"inliers: {int(100*filt_cor.shape[0]/n_corr)}% ")
+        log_sub(logger, "WARNING: This tile's RANSAC failed.")
     return filt_cor
 
 def reciprocity_test(tile_a: Tile, tile_b: Tile):

@@ -4,6 +4,10 @@ from scipy.spatial import KDTree
 
 from lib.data_handling import Tile
 
+import logging
+logger = logging.getLogger("LiMatch")
+from lib.logger import log_sub, log_sub_sub
+
 def detect_keypoints_iss(xyz,cfg):
     """
     Compute keypoints from a point cloud
@@ -27,8 +31,8 @@ def downsample_keypoints(tile: Tile, cfg):
     '''
     filt_kpts_id = []
     
-    print(f"Initial kpts number: {len(tile.kpts_id)}")
-    print(f"Filtering keypoints to {cfg['max_kpts']} per tile...")
+    log_sub(logger, f"Pre-downsample keypoints number: {len(tile.kpts_id)}")
+    log_sub(logger, f"Filtering keypoints to {cfg['max_kpts']} per tile...")
     for i in np.unique(tile.rsc_id):
         
         kpts_id_tile_i = tile.kpts_id[tile.rsc_id[tile.kpts_id] == i]
@@ -44,13 +48,12 @@ def delete_useless_keypoints(tile_key: Tile, tile_target: Tile, cfg):
     Check if keypoints have at least one target keypoint in vicinity
     If not, delete it
     """
- 
+    init_num = len(tile_key.kpts_id)
     kdt = KDTree(tile_target.xyz[tile_target.kpts_id])
     dist, _ = kdt.query(tile_key.xyz[tile_key.kpts_id], workers=-1)
-
     tile_key.kpts_id = tile_key.kpts_id[dist < 2*cfg['uncertainty_r']]
     tile_key.n_kpts = len(tile_key.kpts_id)
-    print(f"Final kpts number: {tile_key.n_kpts}")
+    log_sub_sub(logger, f"{tile_key.n_kpts} keypoints kept ({100*tile_key.n_kpts/init_num:.2f}%) ")
 
 def get_candidates(tile_key: Tile, tile_target: Tile, cfg):
     """

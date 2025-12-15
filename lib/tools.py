@@ -1,18 +1,22 @@
 import numpy as np
 from scipy.interpolate import interp1d
 from scipy.spatial.transform import Rotation as R, Slerp
-
 from pyproj import Transformer
 
 from lib.georef import correct_laser_vector
 from lib.data_handling import Corres, Tile
+from lib.tools import *
+
+import logging
+logger = logging.getLogger("LiMatch")
+from lib.logger import log_sub, log_sub_sub
 
 def prepare_overlap(tile_a: Tile, tile_b: Tile, cfg):
     '''
     Prepare the data for tiling by filtering out non-overlapping sections and assigning a tile id to each point
     '''
     if cfg['tile']:
-        print(f"Tiling with size {cfg['step_x']}x{cfg['step_y']}...")
+        log_sub(logger, f"Tiling with size {cfg['step_x']}x{cfg['step_y']}...")
         xyz_a = tile_a.xyz
         xyz_b = tile_b.xyz
 
@@ -50,14 +54,17 @@ def prepare_overlap(tile_a: Tile, tile_b: Tile, cfg):
     else:
         kept_id_a = np.zeros((tile_a.xyz.shape[0],), dtype=np.uint8)
         kept_id_b = np.zeros((tile_b.xyz.shape[0],), dtype=np.uint8)
-        print("No tiling... (all points kept)")
+        log_sub(logger, "No tiling... (all points kept)")
 
     shift = tile_a.xyz.mean(axis=0)
 
     tile_a.shift = shift
     tile_b.shift = shift
 
-    print(f"Shifting point clouds toward origin, {shift} m...")
+    log_sub(logger, f"Shifting point clouds toward origin...")
+    with np.printoptions(precision=2, suppress=True):
+        log_sub_sub(logger, f"{shift.flatten()} m...")
+    log_sub_sub(logger, f"(Coordinates shifted back at export)")
     tile_a.xyz = (tile_a.xyz - shift).astype(np.float32)
     tile_b.xyz = (tile_b.xyz - shift).astype(np.float32)
 
@@ -68,14 +75,15 @@ def prepare_overlap(tile_a: Tile, tile_b: Tile, cfg):
         max_tile = int(np.max(kept_id_a))
     except Exception:
         max_tile = 0
-    print(f"{max_tile} valid tiles generated...")
+
+    log_sub(logger, f"Generated {max_tile} valid tiles.")
 
 def build_corres_file(c: Corres, tile_a: Tile, tile_b: Tile, cfg):
     """
     Build and save correspondences file for RANSAC and ICP stages.
     """
     if c is None or c.idx_a.shape[0] == 0:
-        print("No correspondences to write.")
+        log_sub(logger, "No correspondences to save.")
         return
     idx_a = c.idx_a.astype(int)
     idx_b = c.idx_b.astype(int)
@@ -85,7 +93,7 @@ def build_corres_file(c: Corres, tile_a: Tile, tile_b: Tile, cfg):
     icp_vec = c.icp_vec
 
     if cfg.get("simulateLasVec", False):
-        print("Simulating laser vectors from trajectory...")
+        log_sub(logger, "Simulating laser vectors from trajectory...")
         las_vec_a, las_vec_b = simulate_las_vec(
             time_a.reshape(-1),
             time_b.reshape(-1),
@@ -96,7 +104,7 @@ def build_corres_file(c: Corres, tile_a: Tile, tile_b: Tile, cfg):
             np.array(cfg.get('lever_arm', [0.0, 0.0, 0.0])),
             cfg['point_epsg'])
     else:
-        print("Fetching laser vectors from input...")
+        log_sub(logger, "Fetching laser vectors from input...")
         las_vec_a = tile_a.las_vec[idx_a]
         las_vec_b = tile_b.las_vec[idx_b]
 
@@ -168,4 +176,3 @@ def simulate_las_vec(time_a, time_b, xyz_a, xyz_b, trj_path, R_s2b, a_s, point_e
         las_vec_b[i, :] = R_s2b.T @ inner_b
 
     return las_vec_a, las_vec_b
-

@@ -3,10 +3,15 @@ import numpy as np
 from pathlib import Path
 import laspy as lp
 
+import logging
+logger = logging.getLogger("LiMatch")
+from lib.logger import log_sub
+
 def create_project_folder(path):
     '''
     Create the folder structure for the project
     '''
+    log_sub(logger, f"Will save data at: {path}")
     Path(path).mkdir(parents=True, exist_ok=True)
     Path(path+"tiles").mkdir(parents=True, exist_ok=True) 
     Path(path+"plots").mkdir(parents=True, exist_ok=True) 
