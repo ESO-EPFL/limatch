@@ -4,6 +4,7 @@ import copy
 import open3d as o3d
 from scipy.spatial import KDTree
 from lib.io import load_ascii_cloud, load_las_cloud
+from lib.map import Trajectory, simulate_las_vec, correct_laser_vector
 
 import logging
 logger = logging.getLogger("LiMatch")
@@ -182,6 +183,9 @@ class Corres:
     idx_a: np.ndarray        # (N,) int — keypoint id in tile A
     idx_b: np.ndarray        # (N,) int — matched keypoint id in tile B
 
+    time_a: np.ndarray       # (N,) float — time of point in tile A
+    time_b: np.ndarray       # (N,) float — time of point in tile B
+
     d_xyz: np.ndarray        # (N,) float — spatial distance (updated post-ICP)
     d_feat: np.ndarray       # (N,) float — descriptor distance
 
@@ -199,6 +203,8 @@ class Corres:
         return cls(
             idx_a=np.empty((0,), dtype=np.int32),
             idx_b=np.empty((0,), dtype=np.int32),
+            time_a=np.empty((0,), dtype=float),
+            time_b=np.empty((0,), dtype=float),
             d_xyz=np.empty((0,), dtype=float),
             d_feat=np.empty((0,), dtype=float),
             xyz_a=np.empty((0, 3), dtype=float),
@@ -217,6 +223,8 @@ class Corres:
         return cls(
             idx_a = tile_key.kpts_id.copy(),
             idx_b = tile_key.cor_id.copy(),
+            time_a = tile_key.time[tile_key.kpts_id].copy(),
+            time_b = tile_tgt.time[tile_key.cor_id].copy(),
             d_xyz = np.linalg.norm(xyz_a - xyz_b, axis=1),
             d_feat = feat_dist.copy(),
             xyz_a = xyz_a,
@@ -224,28 +232,13 @@ class Corres:
             rsc_id = tile_key.rsc_id[tile_key.kpts_id].copy(),
             icp_vec = np.zeros((xyz_a.shape[0], 3), dtype=float),
         )
-   
+      
     def deep_copy(self):
         """
         Create a deep copy of another Corres object.
         """
         return copy.deepcopy(self)
     
-    def to_array(self):
-        N = self.idx_a.shape[0]
-        out = np.zeros((N, 14), dtype=float)
-
-        out[:, 0] = self.idx_a
-        out[:, 1] = self.idx_b
-        out[:, 2] = self.d_xyz
-        out[:, 3] = self.d_feat
-        out[:, 4:7] = self.xyz_a
-        out[:, 7:10] = self.xyz_b
-        out[:, 10] = self.rsc_id
-        out[:, 11:14] = self.icp_vec
-
-        return out
-
     def apply_mask(self, mask: np.ndarray):
         """
         Return a new Corres object containing only entries where mask==True.
@@ -254,6 +247,8 @@ class Corres:
         return Corres(
             idx_a   = self.idx_a[mask],
             idx_b   = self.idx_b[mask],
+            time_a  = self.time_a[mask],
+            time_b  = self.time_b[mask],
             d_xyz   = self.d_xyz[mask],
             d_feat  = self.d_feat[mask],
             xyz_a   = self.xyz_a[mask],
@@ -262,10 +257,42 @@ class Corres:
             icp_vec = self.icp_vec[mask],
         )
     
+    def save_ascii(self, path, shift):
+        """
+        Save correspondence data to an ASCII file.
+        """
+        time_a = self.time_a.reshape(-1, 1)
+        time_b = self.time_b.reshape(-1, 1)
+
+        xyz_a = self.xyz_a
+        xyz_b = self.xyz_b
+
+        icp_vec = self.icp_vec
+
+        xyz_dist = self.d_xyz.reshape(-1, 1)
+
+        time_sort = np.argsort(time_a.flatten())
+
+        data = np.hstack((
+            time_a,
+            xyz_a + shift,
+            time_b,
+            xyz_b + shift,
+            xyz_dist,
+            icp_vec,
+        ))
+        data = data[time_sort, :]
+        header = "time_a x_a y_a z_a time_b x_b y_b z_b d_xyz icp_x icp_y icp_z"
+        fmt = "%.6f, %.3f, %.3f, %.3f, %.6f, %.3f, %.3f, %.3f, %.3f, %.3f, %.3f, %.3f"
+
+        np.savetxt(path, data, header=header, comments='', fmt=fmt)
+           
 def concatenate_corres(a: Corres, b: Corres) -> Corres:
     return Corres(
         idx_a = np.concatenate([a.idx_a, b.idx_a]),
         idx_b = np.concatenate([a.idx_b, b.idx_b]),
+        time_a = np.concatenate([a.time_a, b.time_a]),
+        time_b = np.concatenate([a.time_b, b.time_b]),
         d_xyz = np.concatenate([a.d_xyz, b.d_xyz]),
         d_feat = np.concatenate([a.d_feat, b.d_feat]),
         xyz_a = np.concatenate([a.xyz_a, b.xyz_a]),
@@ -273,3 +300,137 @@ def concatenate_corres(a: Corres, b: Corres) -> Corres:
         rsc_id = np.concatenate([a.rsc_id, b.rsc_id]),
         icp_vec = np.concatenate([a.icp_vec, b.icp_vec]),
     )
+
+def prepare_overlap(tile_a: Tile, tile_b: Tile, cfg):
+    '''
+    Prepare the data for tiling by filtering out non-overlapping sections and assigning a tile id to each point
+    '''
+    if cfg['tile']:
+        log_sub(logger, f"Tiling with size {cfg['step_x']}x{cfg['step_y']}...")
+        xyz_a = tile_a.xyz
+        xyz_b = tile_b.xyz
+
+        xmin = max(np.min(xyz_a[:, 0]), np.min(xyz_b[:, 0]))
+        ymin = max(np.min(xyz_a[:, 1]), np.min(xyz_b[:, 1]))
+
+        tile_id_a = np.concatenate((np.floor((xyz_a[:, 0]-xmin)/cfg['step_x']).reshape(-1, 1),
+                                    np.floor((xyz_a[:, 1]-ymin)/cfg['step_y']).reshape(-1, 1)),
+                                    axis=1)
+        tile_id_b = np.concatenate((np.floor((xyz_b[:, 0]-xmin)/cfg['step_x']).reshape(-1, 1),
+                                    np.floor((xyz_b[:, 1]-ymin)/cfg['step_y']).reshape(-1, 1)),
+                                    axis=1)
+        kept_id = 0
+        kept_id_a = np.zeros((xyz_a.shape[0])).astype(np.uint8)
+        kept_id_b = np.zeros((xyz_b.shape[0])).astype(np.uint8)
+
+        for i in range(int(np.max(tile_id_a[:, 0])+1)):
+            for j in range(int(np.max(tile_id_a[:, 1])+1)):
+                mask_a = np.all([tile_id_a[:, 0] == i, tile_id_a[:, 1] == j], axis=0)
+                mask_b = np.all([tile_id_b[:, 0] == i, tile_id_b[:, 1] == j], axis=0)
+
+                den_a = np.sum(mask_a)/cfg['step_x']/cfg['step_y']
+                den_b = np.sum(mask_b)/cfg['step_x']/cfg['step_y']
+
+                if den_a > cfg['min_den'] and den_b > cfg['min_den']:
+                    kept_id += 1
+                    kept_id_a[mask_a] = kept_id
+                    kept_id_b[mask_b] = kept_id
+        tile_a.rsc_id = kept_id_a.astype(np.uint16)
+        tile_b.rsc_id = kept_id_b.astype(np.uint16)
+
+        tile_a.apply_mask(kept_id_a > 0)
+        tile_b.apply_mask(kept_id_b > 0)
+
+    else:
+        kept_id_a = np.zeros((tile_a.xyz.shape[0],), dtype=np.uint8)
+        kept_id_b = np.zeros((tile_b.xyz.shape[0],), dtype=np.uint8)
+        log_sub(logger, "No tiling... (all points kept)")
+
+    shift = tile_a.xyz.mean(axis=0)
+
+    tile_a.shift = shift
+    tile_b.shift = shift
+
+    log_sub(logger, f"Shifting point clouds toward origin...")
+    with np.printoptions(precision=2, suppress=True):
+        log_sub_sub(logger, f"{shift.flatten()} m...")
+    log_sub_sub(logger, f"(Coordinates shifted back at export)")
+    tile_a.xyz = (tile_a.xyz - shift).astype(np.float32)
+    tile_b.xyz = (tile_b.xyz - shift).astype(np.float32)
+
+    tile_a.rebuild_kdt()
+    tile_b.rebuild_kdt()
+
+    try:
+        max_tile = int(np.max(kept_id_a))
+    except Exception:
+        max_tile = 0
+
+    log_sub(logger, f"Generated {max_tile} valid tiles.")
+    return
+
+def build_output(c: Corres, traj: Trajectory, tile_a: Tile, tile_b: Tile, cfg):
+    """
+    Build and save correspondences file for RANSAC and ICP stages.
+    """
+
+    if c is None or c.idx_a.shape[0] == 0:
+        log_sub(logger, "No correspondences to save.")
+        return
+
+    if cfg["lasvec_source"] == "simulate":
+        log_sub(logger, "Simulating laser vectors for correspondences...")
+
+        las_vec_a = simulate_las_vec(
+            traj,
+            time=c.time_a.reshape(-1,1),
+            xyz= c.xyz_a + tile_a.shift,
+            R_s2b=cfg['R_sensor2body'],
+            a_s=cfg['lever_arm'],
+            point_epsg=cfg['point_epsg'],
+        )
+        las_vec_b = simulate_las_vec(
+            traj,
+            time=c.time_b.reshape(-1,1),
+            xyz= c.xyz_b + tile_b.shift,
+            R_s2b=cfg['R_sensor2body'],
+            a_s=cfg['lever_arm'],
+            point_epsg=cfg['point_epsg'],
+        )
+    elif cfg["lasvec_source"] == "input":
+        log_sub(logger, "Using input laser vectors for correspondences...")
+        las_vec_a = tile_a.las_vec[c.idx_a]
+        las_vec_b = tile_b.las_vec[c.idx_b]
+    else:
+        raise ValueError("Unknown lasvec_source")
+    
+    assert c.icp_vec.shape == c.xyz_a.shape
+    assert las_vec_a.shape[1] == 3
+    assert las_vec_a.shape == las_vec_b.shape
+    assert c.time_a.shape == c.time_b.shape
+    assert c.xyz_a.shape == c.xyz_b.shape
+    assert c.icp_vec.shape == c.xyz_a.shape
+    
+    p2p = np.concatenate((c.time_b, c.time_a, las_vec_b, las_vec_a), axis=1)
+    p2p = p2p[p2p[:, 0].argsort()]
+
+    log_sub(logger, "Correcting laser vectors A with ICP results...")
+    las_vec_a_corrected = correct_laser_vector(traj,
+                                               las_vec_a,
+                                               cfg['R_sensor2body'],
+                                               c.time_a,
+                                               c.icp_vec)
+    
+    p2p_icp = np.concatenate((c.time_b, c.time_a, las_vec_b, las_vec_a_corrected), axis=1)
+    p2p_icp = p2p_icp[p2p_icp[:, 0].argsort()]
+
+    log_sub(logger, f"Saving to {cfg['prj_folder']}cor_outputs/")
+    np.savetxt(cfg['prj_folder'] + f"cor_outputs/LiDAR_p2p_rsc_{cfg['tile_id']}.txt",
+                p2p,
+                delimiter=',',
+                fmt='%.9f, %.9f, %.4f, %.4f, %.4f, %.4f, %.4f, %.4f')
+    np.savetxt(cfg['prj_folder'] + f"cor_outputs/LiDAR_p2p_{cfg['tile_id']}.txt",
+                p2p_icp,
+                fmt='%.9f, %.9f, %.4f, %.4f, %.4f, %.4f, %.4f, %.4f')
+
+    c.save_ascii(cfg['prj_folder'] + f"cor_outputs/corres_{cfg['tile_id']}.txt", tile_a.shift)

@@ -7,13 +7,14 @@ from pathlib import Path
 
 from lib import stats
 from lib.io import create_project_folder
-from lib.data_handling import Tile, Corres, concatenate_corres
+from lib.data_handling import Tile, Corres, concatenate_corres, build_output, prepare_overlap
 from lib.utils_LCD import get_features, load_model, feat_search
-from lib.tools import *
 from lib.keypoints import *
 from lib.vis import vis_kpts
 from lib.filter import ransac_filter, reciprocity_test
 from lib.icp import refine_cor_icp
+from lib.map import Trajectory
+from lib.unit_test import run_tests
 
 process = psutil.Process(os.getpid())
 
@@ -45,6 +46,10 @@ def run_pipeline(cloud1_path, cloud2_path, cfg):
 
 
     # === PREPROCESSING ===============================================
+    if cfg.get("trajectory", None) is not None:
+        traj = Trajectory.fromSBET(cfg["trajectory"])
+    else:
+        traj = None
     tile_a, tile_b = load_tiles(cloud1_path, cloud2_path, cfg)
     preprocess_tiles(tile_a, tile_b, cfg)
     time_prep = time.time()
@@ -85,7 +90,7 @@ def run_pipeline(cloud1_path, cloud2_path, cfg):
     stats['time']['ICP'] = time_icp - time_ransac
 
     # === FINAL OUTPUT ===============================================
-    build_output(corres, corres_rsc, corres_icp, tile_a, tile_b, cfg)
+    out_and_plot(corres, corres_rsc, corres_icp, tile_a, tile_b, traj, cfg)
     time_end = time.time()
     stats['time']['Total'] = time_end - time0
 
@@ -237,7 +242,7 @@ def refine_icp(corres_rsc, tile_a, tile_b, cfg):
     """
     log_progress(logger, 6, "ICP refinement")
     if corres_rsc is None or corres_rsc.idx_a.size == 0:
-        print("No matches to refine with ICP.")
+        log_sub(logger, "No matches to refine with ICP.")
         return Corres.empty()
 
     corres_icp = None
@@ -255,17 +260,21 @@ def refine_icp(corres_rsc, tile_a, tile_b, cfg):
 
     return corres_icp
 
-def build_output(corres, corres_rsc, corres_icp, tile_a, tile_b, cfg):
+def out_and_plot(corres, corres_rsc, corres_icp, tile_a, tile_b, traj, cfg):
     """
     Wrap final output generation and stats building.
     """
     log_progress(logger, 7, "Building output")
-    build_corres_file(corres_icp, tile_a, tile_b, cfg)
+    build_output(corres_icp, traj, tile_a, tile_b, cfg)
+
+    if cfg.get('run_tests', False):
+        run_tests(corres_rsc, tile_a, tile_b, traj, cfg)
+
 
     if cfg.get('save_stats', False):
-        stats_raw = stats.compute_stats(corres.to_array(), cfg['tile_id'])
-        stats_rsc = stats.compute_stats(corres_rsc.to_array(), cfg['tile_id']) 
-        stats_icp = stats.compute_stats(corres_icp.to_array(), cfg['tile_id'])
+        stats_raw = stats.compute_stats(corres, cfg['tile_id'])
+        stats_rsc = stats.compute_stats(corres_rsc, cfg['tile_id']) 
+        stats_icp = stats.compute_stats(corres_icp, cfg['tile_id'])
 
         if stats_raw is not None:
             stats.plot_stats(stats_raw, cfg['prj_folder'] + "plots/", f'raw_{cfg["tile_id"]}')

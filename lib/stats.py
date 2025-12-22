@@ -1,30 +1,30 @@
 import numpy as np
-import math
 import matplotlib.pyplot as plt
+from lib.data_handling import Corres
 
-def compute_stats(corres, tile_num, inlier_thr=np.linspace(0, 1, 50)):
+def compute_stats(c: Corres, tile_num, inlier_thr=np.linspace(0, 1, 50)):
     """
     Build stats on correspondences. Only valid on groundtruth aligned point clouds.
     """
-    corres_num = corres.shape[0]
+    corres_num = c.xyz_a.shape[0]
 
     stats = {}
     stats["Tile number"] = tile_num
-    stats["Correspondences"] = corres
-    stats["Number corr"] = corres.shape[0]
-    stats["Distances"] = corres[:, 2]
+    stats["Correspondences"] = c
+    stats["Number corr"] = c.xyz_a.shape[0]
+    stats["Distances"] = c.d_xyz
 
     inlier_ratios = np.empty((inlier_thr.shape))
 
     for i in range(inlier_thr.shape[0]):
-        match = np.sum(corres[:, 2] < inlier_thr[i])
+        match = np.sum(c.d_xyz < inlier_thr[i])
 
         inlier_ratios[i] = match/corres_num
 
     stats["Inlier thresholds"] = inlier_thr
     stats["Inlier ratios"] = inlier_ratios
 
-    error_vec = corres[:, 7:10]-corres[:, 4:7]
+    error_vec = c.xyz_b - c.xyz_a
     stats["Error vectors"] = error_vec
     error_vec = error_vec/np.linalg.norm(error_vec, axis=1).reshape(-1, 1)
     stats["Error angles"] = np.degrees(np.arctan2(error_vec[:, 0], error_vec[:, 1])) % 360
