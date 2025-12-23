@@ -6,7 +6,6 @@ import logging
 logger = logging.getLogger("LiMatch")
 from lib.logger import log_sub
 
-
 def create_project_folder(path):
     '''
     Create the folder structure for the project
@@ -43,7 +42,7 @@ def load_ascii_cloud(file, cfg):
 
     return xyz, time, las_vec
 
-def load_las_cloud(file):
+def load_las_cloud(file, cfg):
     """
     Load a point cloud from a LAS file
     """
@@ -56,6 +55,14 @@ def load_las_cloud(file):
             time = las.gps_time
         else:
             time = np.zeros((las.xyz.shape[0], 1))
+            log_sub(logger, f"LAS file {file} has no GPS time. Setting all times to zero.")
+
+            if cfg.get("lasvec_source", "simulate") or cfg.get("lasvec_source", "input"):
+                log_sub(logger, f"Warning: lasvec_source is set to '{cfg['lasvec_source']}' but LAS file has no GPS time.")
+                log_sub(logger, f"Setting laser vector processing needs point cloud to trajectory time sync")
+                log_sub(logger, f"Setting cfg['lasvec_source'] to None to skip laser vector processing")
+
+
 
         las_vec = np.zeros((las.xyz.shape[0], 3))
 

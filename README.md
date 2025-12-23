@@ -1,186 +1,288 @@
+# LiMatch — Point‑to‑Point LiDAR Correspondence Extraction
 
 ![Point to point matching pipeline](./media/limatch.png)
 
-Limatch is the Python implementation of the automated lidar to lidar 3D correspondences retrieval method presented in:
+LiMatch is a Python implementation of the automated LiDAR‑to‑LiDAR 3D correspondence extraction method presented in:
 
-### [[Generalization of point-to-point matching for rigorous optimization in kinematic laser scanning]](https://www.sciencedirect.com/science/article/pii/S0924271625003235)
+### **[Generalization of point‑to‑point matching for rigorous optimization in kinematic laser scanning](https://www.sciencedirect.com/science/article/pii/S0924271625003235)**  
 Aurélien Brun, Jakub Kolecki, Muyan Xiao, Luca Insolia, Elmar Vincent van der Zwan, Stéphane Guerrier, Jan Skaloud
 
-> [!WARNING]  
-> LiMatch is under active development and comes without guarantee. If you spot a bug or would like a feature to be added, you are welcome to open an issue or a pull request 😃 
+> **Warning**  
+> LiMatch is under active development and comes without guarantee.  
+> Bug reports, issues and pull requests are very welcome 🙂
+
+---
 
 ## Introduction
 
-Limatch allows the automated extraction of point to point correspondences between point clouds that partially overlap. Starting from two point cloud files (las, laz or txt), Limatch outputs a set of point to point correspondences that correspond to the same physical entities over the scanned area. These correspondences can be used in several ways such as: refining the trajectory in a factor graph approach (advanced), refining the mounting and boresight parameters of the lidar, or for rigid point cloud registration.
+LiMatch automatically extracts **point‑to‑point correspondences** between two partially overlapping point clouds.  
+Starting from two point cloud files (`.las`, `.laz`, or ASCII), LiMatch outputs a set of correspondences that refer to the **same physical entities** observed at different acquisition times.
 
-Similar to tie point generation in photogrammetry, but applied to point clouds, Limatch implements steps of keypoints detection, description, matching, filtration and local refinement to output the final correspondences:
+These correspondences can be used for:
+- Rigid point cloud registration
+- Mounting / boresight calibration
+- Trajectory refinement in factor‑graph frameworks (advanced use case)
+
+Conceptually similar to tie‑point generation in photogrammetry, LiMatch operates directly on 3D point clouds and follows a fully automated pipeline:
 
 ![Point to point matching pipeline](./media/p2p_pipeline.png)
 
-More details on the implementation and usage of the correspondences for trajectory refinement in MLS (car), MLS (handheld) and ALS are available in the original paper.
+The full methodology and applications to MLS and ALS are described in the reference paper.
 
-## Usage 
+---
 
-Run the matching pipeline between two example point clouds like this:
+## Modes of Operation
+
+LiMatch supports **two clearly separated modes**, reflected in the code and configuration files.
+
+### 1️⃣ Geometric Matching Only (default)
+
+- No trajectory required
+- No laser vectors required
+- Purely geometric correspondences + ICP refinement vectors
+
+Typical use cases:
+- Rigid registration
+- Quality assessment
+- Cloud‑to‑cloud alignment diagnostics
+
+### 2️⃣ Trajectory‑Aware Matching (paper use case)
+
+- Requires a trajectory (SBET)
+- Requires laser vectors (input or simulated)
+- Requires scanner mounting info
+- Outputs corrected laser vectors suitable for factor‑graph optimization
+
+Typical use cases:
+- Trajectory refinement
+- Boresight calibration
+
+The active mode is controlled by the presence and value of `lasvec_source` in the YAML configuration.
+
+---
+
+## Usage
+
+Run the matching pipeline between two point clouds:
 
 ```bash
-python3 matching_pipeline.py -c1 path_to_cloud_1 -c2 path_to_cloud_2 -y path_to_config.yml
-
+python3 matching_pipeline.py   -c1 path_to_cloud_1   -c2 path_to_cloud_2   -y path_to_config.yml
 ```
 
-Where c1 and c2 must be point cloud with compatible format (las, laz or ascii)
+Both clouds must:
+- Use compatible formats (`las`, `laz`, or ASCII)
+- Share the same coordinate reference system
+- Partially overlap in space
+
+---
 
 ## Installation
 
-Please use the following commands for installation.
-
-
 ```bash
 git clone https://github.com/ESO-EPFL/limatch.git
-
-cd p2p
+cd limatch
 
 git submodule update --init
 
-conda create -n p2p python==3.9
+conda create -n limatch python=3.9
+conda activate limatch
 
-conda activate p2p
-
-pip3 install torch torchvision
-
-pip3 install -r requirements.txt
+pip install torch torchvision
+pip install -r requirements.txt
 ```
-Note: make sure to download a pytorch + cuda version that is compatible with your NVIDIA drivers, see [here](https://pytorch.org/get-started/previous-versions/)
 
-CUDA is optionnal but recommended for large scale data.
+> **Note**  
+> Install a PyTorch build compatible with your CUDA / driver version if GPU acceleration is desired:  
+> https://pytorch.org/get-started/previous-versions/
 
-Key dependencies include: 
+CUDA is optional but strongly recommended for large‑scale datasets.
 
-- [pytorch](https://pytorch.org/)
-- [open3d](http://www.open3d.org/)
-- [scipy](https://scipy.org/)
-- [faiss](https://github.com/facebookresearch/faiss)
+### Main Dependencies
+
+- [PyTorch](https://pytorch.org/)
+- [Open3D](http://www.open3d.org/)
+- [SciPy](https://scipy.org/)
+- [FAISS](https://github.com/facebookresearch/faiss)
 - [laspy](https://laspy.readthedocs.io/)
 
-## Data preparation 
+---
 
-The pipeline operates on pairs of partially overlaping point clouds files (.txt, .las or .laz format are currently supported). To get started with a basic extraction, you will only need two point clouds with compatible format and partial overlap as input. Depending on the scanning system and setup (aerial vs terrestrial, indoor vs outdoor), you can adapt one of the configuration provided in the configuration folder, see below.
+## Data Preparation
 
-The example dataset available here can be used along the ALS_close_range.yml configuration template.
+LiMatch operates on **pairs of partially overlapping point clouds**:
 
+Supported formats:
+- `.las` / `.laz`
+- ASCII `.txt`
 
-## Configuration
+For ASCII files, the following columns are expected (configurable):
+- Time (GPS seconds of week)
+- XYZ coordinates
+- Optional laser vectors (scanner frame)
 
-We provide 4 template configuration files for the matching pipeline, adapted to:
+Example datasets and configuration templates are provided in the `configs/` folder.
 
-- outdoor MLS (car)
-- mixed indoor/outdoor MLS (handheld)
-- close range ALS (UAV/helicopter)
-- long range ALS (plane)
+---
 
-Configuration files can be found in **./configs/**.
+## Configuration Overview
 
-## Weigths
+Configuration is handled entirely through a YAML file.
 
-The description stage relies on a retrained version of [LCD, Learned Cross Domain descriptor](https://github.com/hkust-vgd/lcd)'s 3D encoder. Weigths are available in **./weights/model.pth**
+Templates are provided for:
+- MLS (car)
+- Close‑range ALS (UAV / helicopter)
+- Long‑range ALS (airplane)
 
-## Repicating results
+See `configs/` for examples.
 
-To replicate results presented in the aerial case of [the paper](https://www.sciencedirect.com/science/article/pii/S0924271625003235), please follow the following steps.
+### Key Sections
 
-#### I. Download required data and configuration
- Go to the following [zenodo record](https://zenodo.org/records/13929655) and download the two baseline point clouds (Baseline_cloud1.txt, Baseline_cloud2.txt). Each text file contains 7 columns and  no header.
-- Column 1: time, unit *gps seconds of week*
-- Column 2-4: points coordinates (epsg::2056), unit 3x *meters*
-- Column 5-7: laser vector (points coordinate in lidar sensor frame), units *meters*  
+- **General settings**: paths, visualization, logging
+- **Data loading**: format, column mapping
+- **Tiling & preprocessing**
+- **Keypoint detection (ISS)**
+- **Descriptor extraction (LCD)**
+- **Matching & RANSAC filtering**
+- **Local ICP refinement**
+- **(Optional) Laser vectors & trajectory**
 
-On the same page, download baseline trajectory in epsg::2056 with 8 columns, no headers.
-- Column 1: time, unit *gps seconds of week*
-- Column 2-4: body frame position (epsg::2056), unit 3x *meters*
-- Column 5-8: body frame orientation (epsg::2056), quaternion w, x, y, z
+---
 
-#### II. Complete the configuration file
+## Coordinate Reference Systems
 
-In the provided ALS_close_range.yml configuration, update paths to your project folder, to the baseline trajectory and to the descriptor network's weights. 
+### Point Cloud CRS (`point_epsg`)
 
-#### III. Generate point to point correspondences 
+Used **only when simulating laser vectors**.
 
-Finally, generate point to point correspondences with the matching pipeline by running:
+- If omitted → geometric mode only
+- `2056` (LV95) supported with an **approximate** conversion to WGS84  
+  (meter‑level bias expected due to missing official transformations in `pyproj`)
 
-```bash
-python3 matching_pipeline.py -c1 path_to/Baseline_cloud1.txt -c2 path_to/Baseline_cloud1.txt -y ALS_close_range.yml
+This does **not** affect geometric matching quality.
 
+---
+
+## Laser Vectors & Trajectory (Optional)
+
+Activate trajectory‑aware mode by setting:
+
+```yaml
+lasvec_source: "input"      # or "simulate"
 ```
 
-#### IV. Interpreting the results
+### Laser Vector Sources
 
-In the **project/plots** subfolder, some figures allow to quickly analize the results.
-There important info are provided such as:
-- Final number of correspondences
-- Average misalignment
-- Distribution of the misalignment for all correspondences in 3D, in terms of norm and heading (i.e. direction of the misalignment in the X/Y plane)
+- `"input"`  
+  Laser vectors are read directly from the point cloud, only for ascii cloud with **lasvec_col** set.
 
-**Important note:** the misalignment gives an indication of the nature of the misalignement between both point clouds. If this misalignement is of systematic nature, for example due to a boresight or lever arm error, then the norm, 3d distribution and heading should be strongly clustered as exemplified below
+- `"simulate"`  
+  Laser vectors are simulated from:
+  - Trajectory
+  - Scanner‑to‑body mount + boresight (expressed as one combined dcm matrix $R_{scaner}^{body}$)
+  - Lever arm
 
+### Required Parameters
 
-![Point to point matching results with boresigh error](./media/stats_bor.png)
+```yaml
+trajectory: path/to/SBET.out
 
-On the contrary if the main source of misalignment in the point cloud is not systematic (e.g. attitude error due to low quality IMU), less clusetering will be observed as seen below. When running on the provided test data, such results is expected since MEMS-IMU as often mounted on drones were used to generate the Baseline point clouds.
+R_sensor2body:
+  - [r11, r12, r13]
+  - [r21, r22, r23]
+  - [r31, r32, r33]
 
-![Point to point matching results with attitude error](./media/stats_nav.png)
-
-#### V. Refine the trajectory using the correspondences
-
-To use the output correspondences for trajectory refinement in Dynamic Network, please go to the [Online Dynamic Network solver (ODyN) documentation](https://github.com/SMAC-Group/ODyN) and download the example data with [INS/GNSS + LIDAR](https://github.com/SMAC-Group/ODyN/raw/master/data/brun25/INS+lidar.zip). To use your correspondences instead, extract the archive and replace the LiDAR_p2p.txt file content with your output (found in **project_folder/cor_outputs/LiDAR_p2p.txt**). 
-
-You can the zip again the files and run the trajectory estimation in [ODyN](https://odyn.epfl.ch/) with the appropriate configuration, as indicated in the [ODyN documentation](https://github.com/SMAC-Group/ODyN)
-
-## Use with your own data
-
-### I. Simple usage (no trajectory estimation in factor graph)
-
-To simply test the pipeline on your data (without laser vector extraction for trajectory correction as in the paper), you can use the following command, either on LAS/LAZ clouds or with ASCII clouds, setting **adjustLasVec** setting to False in your configuration.
-
-```bash
-python3 matching_pipeline.py -c1 path_to_cloud_1 -c2 path_to_cloud_2 -y path_to_config.yml
-
+lever_arm: [dx, dy, dz]
 ```
 
-The output **LiDAR_p2p.txt** then contains the following info (units are based on the units of your input):
-- Column 1-2: time of emission of point b and a
-- Column 3-5: coordinates of point b
-- Column 6-8: coordinates of point a
-- Column 9-11: ICP refinement vector
+SBET rotations follow a **right‑handed, forward‑right‑down body frame** convention.
 
-To get the refined coordinates of your correspondences, you can simply do *xyz_a_refined = xyz_a + icp_vec*
+---
 
-### II. Advanced usage with laser vector extraction (e.g. for trajectory refinement)
+## Outputs
 
-To refine the trajectory based on the extracted correspondences, you will need to provide some more information to the pipeline, as detailed in the paper Sec.2, namely:
-- Laser vectors (point coordinate in scanner frame at time of emission). Access to this depends on the scanner manufacturer (e.g. via parsing of SDC files for Riegl). The input cloud must be formed as detailed in the "Replicating results" section.
-- Rotation matrix, scanner to body, representing expressing the rotation from the scanner frame to the body frame of the trajectory to refine. To be set in the configuration **R_sensor2body**
-- The trajectory itself, following the same format as presented in the "Replicating results" section, path of which needs to be set in the configuration file **trj_path** 
+### Correspondences
 
+Saved in `project_folder/cor_outputs/`:
 
+- `corres_*.txt`  
+  Correspondences coordinates + ICP vectors ($xyz_a \approx xyz_b + icp_{vec}$)
+
+### Laser‑Vector Outputs (trajectory mode)
+
+- `LiDAR_p2p_rsc_*.txt`  
+  Raw laser vectors
+
+- `LiDAR_p2p_*.txt`  
+  ICP‑corrected laser vectors
+
+Format:
+```
+t_b, t_a, vec_b_x, vec_b_y, vec_b_z, vec_a_x, vec_a_y, vec_a_z
+```
+
+---
+
+## Replicating Paper Results (ALS Case)
+
+### I. Download Data
+
+From the Zenodo record:  
+https://zenodo.org/records/13929655
+
+- Two baseline point clouds (ASCII, EPSG:2056)
+- One SBET trajectory
+
+### II. Update Configuration
+
+Edit `ALS_close_range.yml`:
+- Project folder
+- Trajectory path
+- Descriptor weights
+
+### III. Run
+
+```bash
+python3 matching_pipeline.py   -c1 Baseline_cloud1.txt   -c2 Baseline_cloud2.txt   -y ALS_close_range.yml
+```
+
+### IV. Analyze Results
+
+Figures in `project/plots/` show:
+- Number of correspondences
+- Misalignment statistics
+- Directional clustering (systematic vs random errors)
+
+---
+
+## Using Correspondences for Trajectory Refinement
+
+LiMatch outputs are directly compatible with **ODyN / Dynamic Network**.
+
+Instructions and example datasets:
+- https://github.com/SMAC-Group/ODyN
+- https://odyn.epfl.ch/
+
+Replace `LiDAR_p2p.txt` with LiMatch output and run the optimization.
+
+---
 
 ## Reference
 
-```
+```bibtex
 @article{BRUN2025107,
 title = {Generalization of point-to-point matching for rigorous optimization in kinematic laser scanning},
 journal = {ISPRS Journal of Photogrammetry and Remote Sensing},
 volume = {229},
-pages = {107-121},
+pages = {107--121},
 year = {2025},
-issn = {0924-2716},
-doi = {https://doi.org/10.1016/j.isprsjprs.2025.08.011},
-url = {https://www.sciencedirect.com/science/article/pii/S0924271625003235},
-author = {Aurélien Brun and Jakub Kolecki and Muyan Xiao and Luca Insolia and Elmar V. {van der Zwan} and Stéphane Guerrier and Jan Skaloud},
-keywords = {Kinematic laser scanning, Georeferencing, Sensor fusion, Point-to-point correspondences, Tightly-coupled lidar},
+doi = {10.1016/j.isprsjprs.2025.08.011},
+author = {Brun, Aurélien and Kolecki, Jakub and Xiao, Muyan and Insolia, Luca and van der Zwan, Elmar V. and Guerrier, Stéphane and Skaloud, Jan}
 }
 ```
 
+---
+
 ## Acknowledgements
 
-- [ODyN/DN](odyn.epfl.ch/)
-- [LCD](https://github.com/hkust-vgd/lcd)
+- [ODyN / Dynamic Network](https://odyn.epfl.ch/)
+- [LCD Descriptor](https://github.com/hkust-vgd/lcd)

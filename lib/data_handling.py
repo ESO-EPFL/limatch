@@ -48,11 +48,11 @@ class Tile:
         return cls(time, xyz, las_vec)
 
     @classmethod
-    def fromLAS(cls, file):
+    def fromLAS(cls, file, cfg):
         """
         Load point cloud data from a LAS file and return Tile.
         """
-        xyz, time, las_vec = load_las_cloud(file)
+        xyz, time, las_vec = load_las_cloud(file, cfg)
         return cls(time, xyz, las_vec)
 
     def apply_mask(self, mask):
@@ -282,7 +282,7 @@ class Corres:
             icp_vec,
         ))
         data = data[time_sort, :]
-        header = "time_a x_a y_a z_a time_b x_b y_b z_b d_xyz icp_x icp_y icp_z"
+        header = "time_a x_a y_a z_a time_b x_b y_b z_b d_xyz icp_x icp_y icp_z (xyz_a ≃ xyz_b + icp_vec)"
         fmt = "%.6f, %.3f, %.3f, %.3f, %.6f, %.3f, %.3f, %.3f, %.3f, %.3f, %.3f, %.3f"
 
         np.savetxt(path, data, header=header, comments='', fmt=fmt)
@@ -369,7 +369,7 @@ def prepare_overlap(tile_a: Tile, tile_b: Tile, cfg):
     log_sub(logger, f"Generated {max_tile} valid tiles.")
     return
 
-def build_output(c: Corres, traj: Trajectory, tile_a: Tile, tile_b: Tile, cfg):
+def build_output(c: Corres, tile_a: Tile, tile_b: Tile, cfg):
     """
     Build and save correspondences file for RANSAC and ICP stages.
     """
@@ -378,59 +378,70 @@ def build_output(c: Corres, traj: Trajectory, tile_a: Tile, tile_b: Tile, cfg):
         log_sub(logger, "No correspondences to save.")
         return
 
-    if cfg["lasvec_source"] == "simulate":
-        log_sub(logger, "Simulating laser vectors for correspondences...")
+    if cfg.get("lasvec_source", "simulate") or cfg.get("lasvec_source", "input"):
+        traj = Trajectory.fromSBET(cfg["trajectory"])
 
-        las_vec_a = simulate_las_vec(
-            traj,
-            time=c.time_a.reshape(-1,1),
-            xyz= c.xyz_a + tile_a.shift,
-            R_s2b=cfg['R_sensor2body'],
-            a_s=cfg['lever_arm'],
-            point_epsg=cfg['point_epsg'],
-        )
-        las_vec_b = simulate_las_vec(
-            traj,
-            time=c.time_b.reshape(-1,1),
-            xyz= c.xyz_b + tile_b.shift,
-            R_s2b=cfg['R_sensor2body'],
-            a_s=cfg['lever_arm'],
-            point_epsg=cfg['point_epsg'],
-        )
-    elif cfg["lasvec_source"] == "input":
-        log_sub(logger, "Using input laser vectors for correspondences...")
-        las_vec_a = tile_a.las_vec[c.idx_a]
-        las_vec_b = tile_b.las_vec[c.idx_b]
+        if cfg["lasvec_source"] == "simulate":
+            log_sub(logger, "Simulating laser vectors for correspondences...")
+
+            las_vec_a = simulate_las_vec(
+                traj,
+                time=c.time_a.reshape(-1,1),
+                xyz= c.xyz_a + tile_a.shift,
+                R_s2b=cfg['R_sensor2body'],
+                a_s=cfg['lever_arm'],
+                point_epsg=cfg['point_epsg'],
+            )
+            las_vec_b = simulate_las_vec(
+                traj,
+                time=c.time_b.reshape(-1,1),
+                xyz= c.xyz_b + tile_b.shift,
+                R_s2b=cfg['R_sensor2body'],
+                a_s=cfg['lever_arm'],
+                point_epsg=cfg['point_epsg'],
+            )
+        elif cfg["lasvec_source"] == "input":
+            log_sub(logger, "Using input laser vectors for correspondences...")
+            las_vec_a = tile_a.las_vec[c.idx_a]
+            las_vec_b = tile_b.las_vec[c.idx_b]
+        assert las_vec_a.shape[1] == 3
+        assert las_vec_a.shape == las_vec_b.shape
+
+        p2p = np.concatenate((c.time_b, c.time_a, las_vec_b, las_vec_a), axis=1)
+        p2p = p2p[p2p[:, 0].argsort()]
+
+        log_sub(logger, "Correcting laser vectors B with ICP results...")
+        las_vec_b_corrected = correct_laser_vector(traj,
+                                                las_vec_b,
+                                                cfg['R_sensor2body'],
+                                                c.time_b,
+                                                c.icp_vec)
+        
+        p2p_icp = np.concatenate((c.time_b, c.time_a, las_vec_b_corrected, las_vec_a), axis=1)
+        p2p_icp = p2p_icp[p2p_icp[:, 0].argsort()]
+
+        log_sub(logger, f"Saving to {cfg['prj_folder']}cor_outputs/")
+        
+        np.savetxt(cfg['prj_folder'] + f"cor_outputs/LiDAR_p2p_rsc_{cfg['tile_id']}.txt",
+                    p2p,
+                    delimiter=',',
+                    fmt='%.9f, %.9f, %.4f, %.4f, %.4f, %.4f, %.4f, %.4f')
+        np.savetxt(cfg['prj_folder'] + f"cor_outputs/LiDAR_p2p_{cfg['tile_id']}.txt",
+                    p2p_icp,
+                    fmt='%.9f, %.9f, %.4f, %.4f, %.4f, %.4f, %.4f, %.4f')
     else:
-        raise ValueError("Unknown lasvec_source")
-    
+        log_sub(logger, "No laser vector processing requested, or option invalid, should be 'simulate' or 'input'.")
+  
     assert c.icp_vec.shape == c.xyz_a.shape
-    assert las_vec_a.shape[1] == 3
-    assert las_vec_a.shape == las_vec_b.shape
     assert c.time_a.shape == c.time_b.shape
     assert c.xyz_a.shape == c.xyz_b.shape
     assert c.icp_vec.shape == c.xyz_a.shape
-    
-    p2p = np.concatenate((c.time_b, c.time_a, las_vec_b, las_vec_a), axis=1)
-    p2p = p2p[p2p[:, 0].argsort()]
-
-    log_sub(logger, "Correcting laser vectors A with ICP results...")
-    las_vec_a_corrected = correct_laser_vector(traj,
-                                               las_vec_a,
-                                               cfg['R_sensor2body'],
-                                               c.time_a,
-                                               c.icp_vec)
-    
-    p2p_icp = np.concatenate((c.time_b, c.time_a, las_vec_b, las_vec_a_corrected), axis=1)
-    p2p_icp = p2p_icp[p2p_icp[:, 0].argsort()]
-
-    log_sub(logger, f"Saving to {cfg['prj_folder']}cor_outputs/")
-    np.savetxt(cfg['prj_folder'] + f"cor_outputs/LiDAR_p2p_rsc_{cfg['tile_id']}.txt",
-                p2p,
-                delimiter=',',
-                fmt='%.9f, %.9f, %.4f, %.4f, %.4f, %.4f, %.4f, %.4f')
-    np.savetxt(cfg['prj_folder'] + f"cor_outputs/LiDAR_p2p_{cfg['tile_id']}.txt",
-                p2p_icp,
-                fmt='%.9f, %.9f, %.4f, %.4f, %.4f, %.4f, %.4f, %.4f')
 
     c.save_ascii(cfg['prj_folder'] + f"cor_outputs/corres_{cfg['tile_id']}.txt", tile_a.shift)
+
+
+
+
+
+
+    

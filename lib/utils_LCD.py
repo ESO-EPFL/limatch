@@ -142,7 +142,8 @@ def compute_lcd(patches, model, batch_size, device):
 def get_features(tile: Tile, model, device, cfg):
     feat = np.zeros((tile.kpts_id.shape[0], 256),dtype='float32')
     for i in range(0, tile.kpts_id.shape[0], cfg['main_batch']):
-        log_sub_sub(logger, f"batch {i+1}/{int(np.ceil(tile.kpts_id.shape[0]/cfg['main_batch']))}...")
+        batch_id = int(np.ceil(i / cfg['main_batch']) + 1)
+        log_sub_sub(logger, f"batch {batch_id}/{int(np.ceil(tile.kpts_id.shape[0]/cfg['main_batch']))}...")
         patches = extract_patches(tile, cfg, i)
         feat[i:i+cfg['main_batch']] = compute_lcd(patches, model, cfg['lcd_batch'], device)
     del patches

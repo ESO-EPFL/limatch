@@ -42,7 +42,6 @@ def refine_cor_icp(tile_k: Tile, tile_t: Tile, corr: Corres, cfg):
         xyz_t = xyz_t + icp_vec
 
         corr_icp.icp_vec[i] = icp_vec
-        corr_icp.xyz_b[i] = xyz_t
         corr_icp.d_xyz[i] = np.linalg.norm(xyz_k - xyz_t)
 
     return corr_icp

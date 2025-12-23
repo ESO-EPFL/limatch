@@ -123,7 +123,8 @@ def test_las_vec_sim(corr: Corres, tile_a: Tile, tile_b: Tile, traj: Trajectory,
     ax.set_zlabel('Z')
     plt.show()
 
-def run_tests(corres: Corres, tile_a: Tile, tile_b: Tile, traj: Trajectory, cfg):
+def run_tests(corres: Corres, tile_a: Tile, tile_b: Tile, cfg):
+    traj = Trajectory.fromSBET(cfg["trajectory"])
     log_sub(logger, "Running unit tests...")
     log_sub(logger, "Testing Corres apply_mask method...")
     test_corres_apply_mask_keeps_alignment()

@@ -13,7 +13,6 @@ from lib.keypoints import *
 from lib.vis import vis_kpts
 from lib.filter import ransac_filter, reciprocity_test
 from lib.icp import refine_cor_icp
-from lib.map import Trajectory
 from lib.unit_test import run_tests
 
 process = psutil.Process(os.getpid())
@@ -46,12 +45,9 @@ def run_pipeline(cloud1_path, cloud2_path, cfg):
 
 
     # === PREPROCESSING ===============================================
-    if cfg.get("trajectory", None) is not None:
-        traj = Trajectory.fromSBET(cfg["trajectory"])
-    else:
-        traj = None
     tile_a, tile_b = load_tiles(cloud1_path, cloud2_path, cfg)
     preprocess_tiles(tile_a, tile_b, cfg)
+
     time_prep = time.time()
     stats['time']['Preprocessing'] = time_prep - time_model
     stats["metrics"]["Points A"] = tile_a.xyz.shape[0]
@@ -90,7 +86,7 @@ def run_pipeline(cloud1_path, cloud2_path, cfg):
     stats['time']['ICP'] = time_icp - time_ransac
 
     # === FINAL OUTPUT ===============================================
-    out_and_plot(corres, corres_rsc, corres_icp, tile_a, tile_b, traj, cfg)
+    out_and_plot(corres, corres_rsc, corres_icp, tile_a, tile_b, cfg)
     time_end = time.time()
     stats['time']['Total'] = time_end - time0
 
@@ -225,6 +221,10 @@ def filter_matches(corres, tile_ids, cfg):
         if idx.shape[0] < min_inliers:
             log_sub(logger, f"WARNING Tile {tid}: only {idx.shape[0]} inliers < {min_inliers}, deleting...")
             continue
+        elif idx.shape[0] > cfg.get('max_cor_per_tile', np.inf):
+            log_sub(logger, f"Keeping max {cfg['max_cor_per_tile']} correspondences for tile {tid}...")
+            rand = np.random.default_rng()
+            idx = rand.choice(idx, size=cfg['max_cor_per_tile'], replace=False).reshape(-1,1)
         log_sub(logger, f"Tile {tid}: keeping {100*idx.shape[0]/corres_tile.idx_a.shape[0]:.2f}%") 
         filtered_tile = corres_tile.apply_mask(idx[:, 0])
 
@@ -260,15 +260,15 @@ def refine_icp(corres_rsc, tile_a, tile_b, cfg):
 
     return corres_icp
 
-def out_and_plot(corres, corres_rsc, corres_icp, tile_a, tile_b, traj, cfg):
+def out_and_plot(corres, corres_rsc, corres_icp, tile_a, tile_b, cfg):
     """
     Wrap final output generation and stats building.
     """
     log_progress(logger, 7, "Building output")
-    build_output(corres_icp, traj, tile_a, tile_b, cfg)
+    build_output(corres_icp, tile_a, tile_b, cfg)
 
     if cfg.get('run_tests', False):
-        run_tests(corres_rsc, tile_a, tile_b, traj, cfg)
+        run_tests(corres_rsc, tile_a, tile_b, cfg)
 
 
     if cfg.get('save_stats', False):

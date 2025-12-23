@@ -24,11 +24,10 @@ def compute_stats(c: Corres, tile_num, inlier_thr=np.linspace(0, 1, 50)):
     stats["Inlier thresholds"] = inlier_thr
     stats["Inlier ratios"] = inlier_ratios
 
-    error_vec = c.xyz_b - c.xyz_a
+    error_vec = c.xyz_b - c.xyz_a + c.icp_vec
     stats["Error vectors"] = error_vec
     error_vec = error_vec/np.linalg.norm(error_vec, axis=1).reshape(-1, 1)
     stats["Error angles"] = np.degrees(np.arctan2(error_vec[:, 0], error_vec[:, 1])) % 360
-
 
     return stats
 

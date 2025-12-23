@@ -67,7 +67,38 @@ class Trajectory:
 
         return ecef_query, lla_query, R_b2e_query
 
-def simulate_las_vec(traj: Trajectory, time, xyz, R_s2b, a_s, point_epsg):
+class TangentPlane:
+    def __init__(self, lat, lon):
+        print(f"Setting up tangent plane at lat: {lat}°, lon: {lon}°")
+        self.lat = np.radians(lat)
+        self.lon = np.radians(lon)
+
+        self.xyz0 = np.array(lla2ecefTransformer.transform(self.lat, self.lon, 0, radians=True)).reshape(1,3)
+
+        self.R_ecef2enu = T_enu_ned() @ R_ned2e(self.lat, self.lon).T
+
+    def enu_to_ecef(self, xyz_enu):
+        """
+        Convert local ENU coordinates to ECEF.
+
+        Parameters
+        ----------
+        xyz_enu : (N,3) 
+            Coordinates in local tangent plane [E, N, U]
+
+        Returns
+        -------
+        xyz_ecef : (N,3)
+        """
+
+        xyz_ecef = (
+            self.xyz0.reshape(1,3)
+            + (self.R_enu2ecef @ xyz_enu.T).T
+        )
+
+        return xyz_ecef
+
+def simulate_las_vec(traj: Trajectory, time, xyz, R_s2b, a_s, point_epsg, ltp_origin=None):
     """
     Simulate laser vectors from trajectory info (ecef) and points from any epsg
 
@@ -76,16 +107,26 @@ def simulate_las_vec(traj: Trajectory, time, xyz, R_s2b, a_s, point_epsg):
 
     ecef_traj,_ , R_b2e = traj.get_poses(time)
 
-    transformer = Transformer.from_crs(point_epsg,
-                                        "epsg:4978",
-                                        always_xy=True)
     lla = np.zeros_like(xyz)
     ecef_pts = np.zeros_like(xyz)
 
-    for i in range(xyz.shape[0]):
-        lla[i, :] = lv95_to_wgs84_geodetic(xyz[i,0], xyz[i,1], xyz[i,2])
-        ecef_pts[i, :] = np.vstack(lla2ecefTransformer.transform(lla[i, 0], lla[i, 1], lla[i, 2], radians=True)).T
-    #ecef_pts = np.vstack(transformer.transform(xyz[:, 0], xyz[:, 1], xyz[:, 2])).T
+    if point_epsg == 'local':
+        ltp = TangentPlane(ltp_origin[0], ltp_origin[1])
+        ecef_pts = ltp.enu_to_ecef(xyz)
+    elif point_epsg == 2056:
+        log_sub_sub(logger, f"Converting points from LV95 to ECEF...")
+        log_sub_sub(logger, f"WARNING: usnig approximate transform with meter level accuracy ...")
+        log_sub_sub(logger, f"Constant bias in laser vector expected, see Swisstop documentation for details.")
+        for i in range(xyz.shape[0]):
+            lla[i, :] = lv95_to_wgs84_geodetic(xyz[i,0], xyz[i,1], xyz[i,2])
+            ecef_pts[i, :] = np.vstack(lla2ecefTransformer.transform(lla[i, 0], lla[i, 1], lla[i, 2], radians=True)).T
+    else:
+        log_sub_sub(logger, f"Converting points from EPSG:{point_epsg} to ECEF...")
+        transformer = Transformer.from_crs(f"EPSG:{point_epsg}", "EPSG:4326", always_xy=True)
+        for i in range(xyz.shape[0]):
+            lon, lat, h = transformer.transform(xyz[i,0], xyz[i,1], xyz[i,2], radians=True)
+            lla[i, :] = np.array([lat, lon, h])
+            ecef_pts[i, :] = np.vstack(lla2ecefTransformer.transform(lla[i, 0], lla[i, 1], lla[i, 2], radians=True)).T
         
     las_vec = np.zeros_like(ecef_pts)
 
@@ -114,7 +155,7 @@ def correct_laser_vector(traj: Trajectory, lasvec, R_sensor2body, time, icp_vec)
         # ICP: ENU -> ECEF -> body -> sensor
         icp_sensor =  R_s2b.T @ R_b2e[i].T @ (R_enu2ecef_i @ icp_vec[i])
 
-        lasvec_icp[i] = lasvec[i] - icp_sensor
+        lasvec_icp[i] = lasvec[i] + icp_sensor
 
     return lasvec_icp
 
