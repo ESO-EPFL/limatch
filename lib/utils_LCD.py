@@ -2,7 +2,72 @@ import math
 import torch
 import numpy as np
 
-def extractPatches(tile, cfg, idx):
+from pathlib import Path
+import faiss
+
+from submodules.lcd.lcd import models
+
+from lib.data_handling import Tile
+
+import logging
+logger = logging.getLogger("LiMatch")
+from lib.logger import log_progress, log_sub, log_sub_sub
+
+def load_model(cfg):
+    """
+    Load the descriptor model safely and robustly.
+    Handles both:
+      - pure state_dict
+      - {"model": state_dict}
+    Ensures model.eval() and torch.no_grad() usage.
+    """
+    log_progress(logger, 0, "Model setup")
+    model_path = Path(cfg["nn_path"])
+    if not model_path.exists():
+        raise FileNotFoundError(f"Model checkpoint not found: {model_path}")
+
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+        log_sub(logger, "Using CUDA for descriptor inference.")
+    else:
+        device = torch.device("cpu")
+        log_sub(logger, "CUDA not available. Running on CPU. Expect slower descriptor inference.")
+
+    model = models.PointNetAutoencoder(256, 6, 6, True)
+
+    log_sub(logger, f"Loading from: {model_path}")
+    try:
+        checkpoint = torch.load(model_path, map_location=device)
+    except Exception as e:
+        raise RuntimeError(f"Failed to load checkpoint {model_path}: {e}")
+
+    if isinstance(checkpoint, dict) and "model" in checkpoint:
+        state = checkpoint["model"]
+        log_sub(logger, "Loaded nested checkpoint with key 'model'.")
+    elif isinstance(checkpoint, dict) and all(
+        isinstance(v, torch.Tensor) for v in checkpoint.values()
+    ):
+        state = checkpoint
+        log_sub(logger, "Loaded direct state_dict checkpoint.")
+    else:
+        raise ValueError(
+            f"Unrecognized checkpoint structure. Expected state_dict or dict with 'model'. "
+            f"Got keys: {list(checkpoint.keys())}"
+        )
+
+    try:
+        model.load_state_dict(state)
+    except Exception as e:
+        raise RuntimeError(
+            f"Checkpoint structure does not match model architecture: {e}"
+        )
+    model.to(device)
+    model.eval()
+
+    log_sub(logger, "Descriptor model successfully loaded and set to eval() mode.")
+    return model, device
+
+def extract_patches(tile, cfg, idx):
     '''
     Extracts a patch around each query points from point cloud 
     If dual_tile is provided, the function will extract patches from both tiles and merge them to generate a fused patch
@@ -14,7 +79,6 @@ def extractPatches(tile, cfg, idx):
         configuration dictionary.
     idx : int
         index of the main batch loop.
-    dual_tile : tools.tile, optional if dual lidar payload is used
     
     Returns
     -------
@@ -42,8 +106,7 @@ def extractPatches(tile, cfg, idx):
       
     return patches
 
-
-def computeLCD(patches, model, batch_size, device):
+def compute_lcd(patches, model, batch_size, device):
     """
     Compute LCD descriptor given an input for the function extract_uniform_patches
 
@@ -76,12 +139,36 @@ def computeLCD(patches, model, batch_size, device):
             descriptors.append(z)
     return np.concatenate(descriptors, axis=0).astype('float32')
 
-def getFeatures(tile, model, device, cfg):
+def get_features(tile: Tile, model, device, cfg):
     feat = np.zeros((tile.kpts_id.shape[0], 256),dtype='float32')
     for i in range(0, tile.kpts_id.shape[0], cfg['main_batch']):
-        print(f"\033[FDescription {int(100*i/tile.kpts_id.shape[0])}%...")
-        patches = extractPatches(tile, cfg, i)
-        feat[i:i+cfg['main_batch']] = computeLCD(patches, model, cfg['lcd_batch'], device)
+        batch_id = int(np.ceil(i / cfg['main_batch']) + 1)
+        log_sub_sub(logger, f"batch {batch_id}/{int(np.ceil(tile.kpts_id.shape[0]/cfg['main_batch']))}...")
+        patches = extract_patches(tile, cfg, i)
+        feat[i:i+cfg['main_batch']] = compute_lcd(patches, model, cfg['lcd_batch'], device)
     del patches
 
     return feat
+
+def feat_search(tile_key: Tile, tile_target: Tile):
+    """
+    Find nearest neighbors in feature space for a set of keypoints
+    """
+    candidate = tile_key.candidates
+
+    feats_k = tile_key.feat
+    feats = tile_target.feat
+
+    f_dist = np.empty((feats_k.shape[0]))
+    idx_t = np.empty((feats_k.shape[0]), dtype=np.uint32)  
+
+    for i in range(len(candidate)):
+        #Build idx with only candidate points for kpt i
+        flat_idx = faiss.IndexFlatL2(feats.shape[1])    
+        flat_idx.add(feats[candidate[i]])   
+        #Find nearest neigh in feat space for kpt i
+        f_dist[i], idx_local = flat_idx.search(feats_k[i].reshape(1,-1), 1)
+        #Find id of the candidate identified as match in the original cloud
+        idx_t[i] = tile_target.kpts_id[candidate[i][idx_local]]
+
+    return idx_t, f_dist, tile_target.xyz[idx_t]

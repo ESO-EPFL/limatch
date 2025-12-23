@@ -49,21 +49,21 @@ time_shift: 0.0         # Time offset applied to cloud timestamps
 tile: true              # Apply local tiling for ransac (recommended for unstable trajectories)
 save_tiles: false       # Save overlapping tiles for inspection
 
-min_den: 35              # Minimum point density (pts/m²) to keep a tile
-step_x: 75               # Tile size in X (meters)
-step_y: 75               # Tile size in Y (meters)
+min_den: 100              # Minimum point density (pts/m²) to keep a tile
+step_x: 25               # Tile size in X (meters)
+step_y: 25               # Tile size in Y (meters)
 
-vox_size: 0.05            # Initial voxel downsampling size
+vox_size: 0.025            # Initial voxel downsampling size
 max_kpts:                # Max keypoints per tile (None = unlimited)
 
 
 # =============================================================================
 # KEYPOINT DETECTION (ISS)
 # =============================================================================
-iss_sln_r: 1.5
-iss_nm_r: 0.15
-iss_g21: 0.65
-iss_g32: 0.35
+iss_sln_r: 0.75
+iss_nm_r: 0.0
+iss_g21: 0.9
+iss_g32: 0.75
 iss_vox_s: 0.0
 iss_min_n: 1
 
@@ -71,7 +71,7 @@ iss_min_n: 1
 # =============================================================================
 # DESCRIPTOR (LCD)
 # =============================================================================
-lcd_patch_r: 2.0
+lcd_patch_r: 1.0
 lcd_patch_n: 1024
 lcd_batch: 128
 main_batch: 50000
@@ -82,10 +82,10 @@ main_batch: 50000
 # =============================================================================
 reciprocity_test: true
 
-rsc_thr: 0.25
+rsc_thr: 0.2
 rsc_p: 0.9999
 rsc_maxN: 100000
-rsc_lenCheck: 0.1
+rsc_lenCheck: 0.05
 
 uncertainty_r: 1.5       # Expected maximum pointwise error (meters)
 
@@ -93,9 +93,9 @@ uncertainty_r: 1.5       # Expected maximum pointwise error (meters)
 # =============================================================================
 # LOCAL REFINEMENT (ICP)
 # =============================================================================
-icp_patch_r: 5.0
+icp_patch_r: 2.5
 icp_max_n: 150
-icp_thresh: 0.15
+icp_thresh: 0.05
 icp_conv: 1.0e-7
 icp_vox_s: 0.0
 

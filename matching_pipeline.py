@@ -1,191 +1,290 @@
-# %% Import Libraries
-import argparse
-import yaml
 import torch
 import time
 import numpy as np
+import os
+import psutil
+from pathlib import Path
+
+from lib import stats
+from lib.io import create_project_folder
+from lib.data_handling import Tile, Corres, concatenate_corres, build_output, prepare_overlap
+from lib.utils_LCD import get_features, load_model, feat_search
+from lib.keypoints import *
+from lib.vis import vis_kpts
+from lib.filter import ransac_filter, reciprocity_test
+from lib.icp import refine_cor_icp
+from lib.unit_test import run_tests
+
+process = psutil.Process(os.getpid())
+
+import logging
+logger = logging.getLogger("LiMatch")
+from lib.logger import log_sub, log_progress, get_logger
+
+def run_pipeline(cloud1_path, cloud2_path, cfg):
+    """
+    Runs the full matching pipeline.
+    """
+    time0 = time.time()
+    stats = {}
+    stats["time"] = {}
+    stats["metrics"] = {}
+    
+    logger = get_logger(cfg)
+    logger.info("Starting LiMatch pipeline...")
+
+    cfg['tile_id'] = f'{Path(cloud1_path).stem}_{Path(cloud2_path).stem}'
+    create_project_folder(cfg['prj_folder'])
+
+    logger.info(f"Visualization set to {cfg.get('visualize', False)}")
+
+    # === LOAD MODEL ==================================================
+    model, device = load_model(cfg)
+    time_model = time.time()
+    stats['time']['Model setup'] = time_model - time0
 
 
-from lib import stats, icp
-from lib.utils_LCD import getFeatures
-from lib.tools import *
-from lib.vis import visKpts, visMatchPts
-from lib.filter import *
-from lib.georef import R_enu2ecef
-import multiprocessing as mp
+    # === PREPROCESSING ===============================================
+    tile_a, tile_b = load_tiles(cloud1_path, cloud2_path, cfg)
+    preprocess_tiles(tile_a, tile_b, cfg)
 
-from submodules.lcd.lcd import models
+    time_prep = time.time()
+    stats['time']['Preprocessing'] = time_prep - time_model
+    stats["metrics"]["Points A"] = tile_a.xyz.shape[0]
+    stats["metrics"]["Points B"] = tile_b.xyz.shape[0]
+    stats["metrics"]["Tiles num."] = int(np.max(tile_a.rsc_id)) if hasattr(tile_a, "rsc_id") else 1
 
-time0 = time.time()
+    # === KEYPOINT DETECTION ==========================================
+    detect_keypoints(tile_a, tile_b, cfg)
+    time_detect = time.time()
+    stats['time']['Detection'] = time_detect - time_prep
+    stats["metrics"]["Keypoints A"] = tile_a.kpts_id.shape[0]
+    stats["metrics"]["Keypoints B"] = tile_b.kpts_id.shape[0]
 
-parser = argparse.ArgumentParser(description='Point cloud matching pipeline')
-parser.add_argument('--yml','-y', type=str, help='Path to yml configuration file')
-parser.add_argument('--cloud1', '-c1', type=str, help='Path to the first point cloud')
-parser.add_argument('--cloud2', '-c2', type=str, help='Path to the second point cloud')
+    # === DESCRIPTION =================================================
+    compute_descriptors(tile_a, tile_b, model, device, cfg)
+    time_describe = time.time()
+    stats['time']['Description'] = time_describe - time_detect
+    # === MATCHING ====================================================
+    corres = match_features(tile_a, tile_b, cfg)
+    time_match = time.time()
+    stats['time']['Matching'] = time_match - time_describe
+    stats["metrics"]["Raw matches"] = corres.idx_a.shape[0]
 
-args = parser.parse_args()
+    # === RANSAC ======================================================
+    rsc_tile_ids = np.unique(tile_a.rsc_id)
+    corres_rsc = filter_matches(corres, rsc_tile_ids, cfg)
+    time_ransac = time.time()
+    stats['time']['RANSAC'] = time_ransac - time_match
+    stats["metrics"]["RANSAC matches"] = (
+        corres_rsc.idx_a.shape[0] if corres_rsc is not None else 0
+    )
 
-cfg = yaml.safe_load(open(args.yml))
-cfg['tile_id'] = f'{args.cloud1.split("/")[-1].split(".")[0]}_{args.cloud2.split("/")[-1].split(".")[0]}'
-createProjectFolder(cfg['prj_folder'])
+    # === ICP =========================================================
+    corres_icp = refine_icp(corres_rsc, tile_a, tile_b, cfg)
+    time_icp = time.time()
+    stats['time']['ICP'] = time_icp - time_ransac
 
-print(f"Processing  {cfg['tile_id']} ...")
-print('Visualization set to '+str(cfg['visualize']))
+    # === FINAL OUTPUT ===============================================
+    out_and_plot(corres, corres_rsc, corres_icp, tile_a, tile_b, cfg)
+    time_end = time.time()
+    stats['time']['Total'] = time_end - time0
 
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-model = models.PointNetAutoencoder(256, 6, 6, True)
+    logger.info("[Pipeline summary]")
+    for k in ["Model setup", "Preprocessing", "Detection", "Description", "Matching", "RANSAC", "ICP", "Total"]:
+        logger.info(f"  {k:>15}: {stats['time'][k]:.2f}s")
 
-model.load_state_dict(torch.load(cfg["nn_path"], map_location=device, weights_only=False)["model"])
-model = model.to(device)
-time1 = time.time()
+    logger.info("[Metrics]")
+    for k, v in stats["metrics"].items():
+        logger.info(f"  {k:>15}: {v}")
+    logger.info(f"Peak RAM: {process.memory_info().rss / (1024 ** 3):.2f} GB")
+    logger.info("LiMatch pipeline completed.")
+    return corres_icp, stats
 
-# %% ----------------- Step 00 - Preprocessing ------------------- %% #
-
-print("Loading data...")
-if cfg['cloud_fmt'] == 'txt':
-    tile_a = tile.fromASCII(args.cloud1, cfg)
-    tile_b = tile.fromASCII(args.cloud2, cfg)
-elif cfg['cloud_fmt'] == 'las' or cfg['cloud_fmt'] == 'laz':
-    tile_a = tile.fromLAS(args.cloud1, cfg)
-    tile_b = tile.fromLAS(args.cloud2, cfg)
-
-print("Preprocessing data...")
-prepOverlap(tile_a, tile_b, cfg)
-
-if cfg['vox_size'] > 0:
-    print("Initial voxelization...")
-    tile_a.voxTracing(cfg)
-    tile_b.voxTracing(cfg)
-
-if cfg['save_tiles']:
-    print("Saving tile to csv...")
-    np.savetxt(cfg['prj_folder'] + f"tiles/{cfg['tile_id']}_a.csv", np.concatenate([tile_a.rsc_id.reshape(-1,1),tile_a.xyz], axis=1), delimiter=',')
-    np.savetxt(cfg['prj_folder'] + f"tiles/{cfg['tile_id']}_b.csv", np.concatenate([tile_b.rsc_id.reshape(-1,1),tile_b.xyz], axis=1), delimiter=',')
-
-time2 = time.time()
-# %% ----------------- Step 01 - Kpts detection ------------------ %% #
-
-print("Keypoints estimation and tracking...")
-kpts_a = issKpts(tile_a.xyz,cfg)
-kpts_b = issKpts(tile_b.xyz,cfg)
-_, tile_a.kpts_id = tile_a.kdt.query(np.asarray(kpts_a.points), workers=-1)
-_, tile_b.kpts_id = tile_b.kdt.query(np.asarray(kpts_b.points), workers=-1)
-
-if 'max_kpts' in cfg and cfg['max_kpts'] is not None:
-    downSampleKpts(tile_a, cfg)
-    downSampleKpts(tile_b, cfg)
-
-cleanKpts(tile_a, tile_b, cfg)
-cleanKpts(tile_b, tile_a, cfg)
-
-
-if cfg['visualize']:
-    visKpts(tile_a, tile_b, kpts_a, kpts_b)
-
-del kpts_a, kpts_b
-
-time3 = time.time()
-# %% ----------------- Step 02 - Pts description ----------------- %% #
-tile_a.feat = np.zeros((tile_a.kpts_id.shape[0], 256),dtype='float32')
-tile_b.feat = np.zeros((tile_b.kpts_id.shape[0], 256),dtype='float32')
-
-print("Description...")
-tile_a.feat = getFeatures(tile_a, model, device, cfg)
-tile_b.feat = getFeatures(tile_b, model, device, cfg)
-print(f"\033[FDescription... Done")
-time4 = time.time()
-# %% ------------------ Step 03 - Pts matching ------------------- %% #
-print("Point cloud matching...")
-getCandidates(tile_a, tile_b, cfg)
-getCandidates(tile_b, tile_a, cfg)
-
-tile_a.cor_id,feat_dist_a, corr_xyz_a = featSearch(tile_a, tile_b)
-tile_b.cor_id,feat_dist_b, corr_xyz_b = featSearch(tile_b, tile_a)
-
-del tile_a.feat, tile_b.feat
-
-corres = buildCorres(tile_a, tile_b, feat_dist_a)
-
-if cfg['reciprocity_test']:
-    print("Reciprocity test...", end=' ')
-    reciprocal_mask = np.zeros(tile_a.kpts_id.shape[0],dtype=bool)
-    def check_reciprocal(i):
-        return tile_a.kpts_id[i] == tile_b.cor_id[np.where(tile_b.kpts_id == tile_a.cor_id[i])[0][0]]
-
-    with mp.Pool(processes=mp.cpu_count()) as pool:
-        reciprocal_mask = pool.map(check_reciprocal, range(tile_a.kpts_id.shape[0]))
-    reciprocal_mask = np.array(reciprocal_mask, dtype=bool)
-
-    print(f"{100*np.sum(reciprocal_mask)/tile_a.kpts_id.shape[0]:.2f}% of correspondences kept")   
-    corres = corres[reciprocal_mask]
-
-del tile_a.candidates, tile_b.candidates
-
-time5 = time.time()
-# %% ------------------- Step 04.1 - RANSAC ---------------------- %% #
-print("RANSAC filtering...")
-
-corres_rsc_list = []  # collect results
-
-for i in np.unique(tile_a.rsc_id):
-    print(f"\033[FRansac filtering, tile {int(i)},", end=' ')
-    corres_tile = corres[corres[:, 10] == i]
-    idx_a_rsc = ransacFilter(corres_tile, cfg)
-
-    if idx_a_rsc.shape[0] < 50:
-        print(f"Warning, tile {int(i)} has less than 50 matches after RANSAC -> deleting...\n")
-        continue  # skip tiles with uncertain ransac convergence
-
-    corres_rsc_list.append(corres_tile[idx_a_rsc[:, 0], :])
-
-corres_rsc = np.concatenate(corres_rsc_list, axis=0)
-print("Ransac filtering... Done                       ")
-time6 = time.time()
-
-if cfg['visualize']:
-    visMatchPts(tile_a.xyz, corres_rsc)
-# %% -------------------- Step 04.2 - ICP ----------------------- %% #
-print("ICP refinement...")
-for i in np.unique(tile_a.rsc_id):
-    print(f"\033[FICP refinement, tile {int(i)}...")
-    corres_tile = corres_rsc[corres_rsc[:, 10] == i]
-    icp.corrICP(tile_a, tile_b, corres_tile, cfg)
-    if i == 1:
-        corres_icp = corres_tile
+def load_tiles(cloud1_path, cloud2_path, cfg):
+    """
+    Load Tile objects from file paths (txt or las/laz).
+    Returns (tile_a, tile_b)
+    """
+    log_progress(logger, 1, "Preprocessing")
+    log_sub(logger, "Loading point clouds...")
+    if cfg['cloud_fmt'] == 'txt':
+        tile_a = Tile.fromASCII(cloud1_path, cfg)
+        tile_b = Tile.fromASCII(cloud2_path, cfg)
+    elif cfg['cloud_fmt'] in ('las', 'laz'):
+        tile_a = Tile.fromLAS(cloud1_path, cfg)
+        tile_b = Tile.fromLAS(cloud2_path, cfg)
     else:
-        corres_icp = np.concatenate((corres_icp, corres_tile), axis=0)
+        raise ValueError(f"Unsupported cloud_fmt: {cfg['cloud_fmt']}")
+    return tile_a, tile_b
 
-R_enu2ecef = R_enu2ecef(corres_icp[:, 4:7], cfg['point_epsg'])
-print(f"ENU->ECEF rotation matrix from correspondences in EPSG:{cfg['point_epsg']}:\n{R_enu2ecef}")
-icp_vec = -corres_icp[:, -3:]
-print("\033[FICP refinement... Done    ")
-time7 = time.time()
-# %% ----------------- Step 05 - Save output, Compute Stats & Visualization ----------------- %% #
+def preprocess_tiles(tile_a, tile_b, cfg):
+    """
+    Preprocessing steps: overlap tiling, optional voxelization,
+    and optional tile saving to csv. 
+    """
+    prepare_overlap(tile_a, tile_b, cfg)
 
-print("Building correspondences file ...")
-buildCorresFile(corres_rsc, tile_a, tile_b, cfg, icp_vec, R_enu2ecef)
+    if cfg.get('vox_size', 0) > 0:
+        log_sub(logger, f"Applying voxelization with size {cfg['vox_size']} m...")
+        tile_a.apply_voxelization(cfg)
+        tile_b.apply_voxelization(cfg)
 
-if cfg['save_stats']:
-    print("Building stats & plots...")
-    stats_raw = stats.compute_stats(corres, cfg['tile_id'])
-    stats_rsc = stats.compute_stats(corres_rsc, cfg['tile_id'])
-    stats_icp = stats.compute_stats(corres_icp, cfg['tile_id'])
+    if cfg.get('save_tiles', False):
+        log_sub(logger, "Saving tiles to csv...")
+        np.savetxt(cfg['prj_folder'] + f"tiles/{cfg['tile_id']}_a.csv",
+                   np.concatenate([tile_a.rsc_id.reshape(-1, 1), tile_a.xyz], axis=1),
+                   delimiter=',')
+        np.savetxt(cfg['prj_folder'] + f"tiles/{cfg['tile_id']}_b.csv",
+                   np.concatenate([tile_b.rsc_id.reshape(-1, 1), tile_b.xyz], axis=1),
+                   delimiter=',')
 
-    stats.plot_stats(stats_raw, cfg['prj_folder'] + "plots/", f'raw_{cfg["tile_id"]}')
-    stats.plot_stats(stats_rsc, cfg['prj_folder'] + "plots/", f'rsc_{cfg["tile_id"]}')
-    stats.plot_stats(stats_icp, cfg['prj_folder'] + "plots/", f'icp_{cfg["tile_id"]}')
+def detect_keypoints(tile_a, tile_b, cfg):
+    """
+    Detect ISS keypoints and set tile_a.kpts_id / tile_b.kpts_id.
+    Applies optional downsampling and cleaning as in original script.
+    """
+    log_progress(logger, 2, "Keypoint detection")
+    kpts_a = detect_keypoints_iss(tile_a.xyz, cfg)
+    kpts_b = detect_keypoints_iss(tile_b.xyz, cfg)
+    _, tile_a.kpts_id = tile_a.kdt.query(np.asarray(kpts_a.points), workers=-1)
+    _, tile_b.kpts_id = tile_b.kdt.query(np.asarray(kpts_b.points), workers=-1)
 
-    stats.plot_final(stats_raw, stats_rsc, stats_icp, cfg)
+    if 'max_kpts' in cfg and cfg['max_kpts'] is not None:
+        log_sub(logger, f"Downsampling keypoints to max {cfg['max_kpts']} points...")
+        downsample_keypoints(tile_a, cfg)
+        downsample_keypoints(tile_b, cfg)
 
-if cfg['visualize']:
-    visMatchPts(tile_a.xyz, corres_icp)
+    log_sub(logger, f"Deleting kpts without candidate in radius 2*{cfg['uncertainty_r']}m...")
+    delete_useless_keypoints(tile_a, tile_b, cfg)
+    delete_useless_keypoints(tile_b, tile_a, cfg)
 
-print(f"Per step time:\n\
-    Setup: {time1-time0:.2f}s\n\
-    Preprocessing: {time2-time1:.2f}s\n\
-    Detection: {time3-time2:.2f}s\n\
-    Description: {time4-time3:.2f}s\n\
-    Matching: {time5-time4:.2f}s\n\
-    RANSAC: {time6-time5:.2f}s\n\
-    ICP: {time7-time6:.2f}s\n\
-    Total: {time7-time0:.2f}s")
+    if cfg.get('visualize', False):
+        vis_kpts(tile_a, tile_b, kpts_a, kpts_b)
+
+def compute_descriptors(tile_a, tile_b, model, device, cfg):
+    """
+    Compute LCD descriptors for both tiles.
+    """
+    log_progress(logger, 3, "Description")
+    with torch.no_grad():
+        log_sub(logger, "Computing descriptors for Tile A...")
+        tile_a.feat = get_features(tile_a, model, device, cfg)
+        log_sub(logger, "Computing descriptors for Tile B...")
+        tile_b.feat = get_features(tile_b, model, device, cfg)
+        assert getattr(tile_a, "kpts_id", None) is None or tile_a.feat.shape[0] == tile_a.kpts_id.shape[0]
+        assert getattr(tile_b, "kpts_id", None) is None or tile_b.feat.shape[0] == tile_b.kpts_id.shape[0]
+
+def match_features(tile_a, tile_b, cfg):
+    """
+    Candidate generation and feature-based nearest neighbor search.
+    """
+    log_progress(logger, 4, "Matching")
+    get_candidates(tile_a, tile_b, cfg)
+    get_candidates(tile_b, tile_a, cfg)
+
+    tile_a.cor_id, feat_dist_a, _ = feat_search(tile_a, tile_b)
+    tile_b.cor_id, _, _ = feat_search(tile_b, tile_a)
+    tile_a.clear_features()
+    tile_b.clear_features()
+
+    corres = Corres.from_tiles(tile_a, tile_b, feat_dist_a)
+
+    if cfg.get('reciprocity_test', False):
+        log_sub(logger, "Applying reciprocity test...")
+        mask = reciprocity_test(tile_a, tile_b)
+        log_sub(logger, f"Keeping {100*np.sum(mask)/mask.shape[0]:.2f}% reciprocal matches")
+        corres = corres.apply_mask(mask)
+
+    tile_a.clear_candidates()
+    tile_b.clear_candidates()
+
+    return corres
+
+def filter_matches(corres, tile_ids, cfg):
+    """
+    Apply per-tile RANSAC filtering exactly like the original script.
+    Returns concatenated corres_rsc array.
+    """
+    log_progress(logger, 5, "RANSAC filtering")
+    corres_rsc = None
+    min_inliers = cfg.get("rsc_min_inliers", 50)
+
+    for tid in tile_ids:
+        
+
+        tile_mask = (corres.rsc_id == tid)
+        corres_tile = corres.apply_mask(tile_mask)
+
+        idx = ransac_filter(corres_tile, cfg)
+
+        if idx.shape[0] < min_inliers:
+            log_sub(logger, f"WARNING Tile {tid}: only {idx.shape[0]} inliers < {min_inliers}, deleting...")
+            continue
+        elif idx.shape[0] > cfg.get('max_cor_per_tile', np.inf):
+            log_sub(logger, f"Keeping max {cfg['max_cor_per_tile']} correspondences for tile {tid}...")
+            rand = np.random.default_rng()
+            idx = rand.choice(idx, size=cfg['max_cor_per_tile'], replace=False).reshape(-1,1)
+        log_sub(logger, f"Tile {tid}: keeping {100*idx.shape[0]/corres_tile.idx_a.shape[0]:.2f}%") 
+        filtered_tile = corres_tile.apply_mask(idx[:, 0])
+
+        corres_rsc = filtered_tile if corres_rsc is None else concatenate_corres(corres_rsc, filtered_tile)
+    if corres_rsc is None:
+        log_sub(logger, "No matches survived RANSAC filtering.")
+        return Corres.empty()
+    else:
+        return corres_rsc
+
+def refine_icp(corres_rsc, tile_a, tile_b, cfg):
+    """
+    Run per-tile ICP refinement exactly like original corrICP usage.
+    Returns corres_icp (concatenated per-tile arrays).
+    """
+    log_progress(logger, 6, "ICP refinement")
+    if corres_rsc is None or corres_rsc.idx_a.size == 0:
+        log_sub(logger, "No matches to refine with ICP.")
+        return Corres.empty()
+
+    corres_icp = None
+    tile_ids = np.unique(tile_a.rsc_id)
+
+    for tid in tile_ids:
+        log_sub(logger, f"ICP refining tile {tid} with {np.sum(corres_rsc.rsc_id == tid)} correspondences...")
+
+        tile_mask = (corres_rsc.rsc_id == tid)
+        corres_tile = corres_rsc.apply_mask(tile_mask)
+
+        corres_tile = refine_cor_icp(tile_a, tile_b, corres_tile, cfg)
+
+        corres_icp = corres_tile if corres_icp is None else concatenate_corres(corres_icp, corres_tile)
+
+    return corres_icp
+
+def out_and_plot(corres, corres_rsc, corres_icp, tile_a, tile_b, cfg):
+    """
+    Wrap final output generation and stats building.
+    """
+    log_progress(logger, 7, "Building output")
+    build_output(corres_icp, tile_a, tile_b, cfg)
+
+    if cfg.get('run_tests', False):
+        run_tests(corres_rsc, tile_a, tile_b, cfg)
+
+
+    if cfg.get('save_stats', False):
+        stats_raw = stats.compute_stats(corres, cfg['tile_id'])
+        stats_rsc = stats.compute_stats(corres_rsc, cfg['tile_id']) 
+        stats_icp = stats.compute_stats(corres_icp, cfg['tile_id'])
+
+        if stats_raw is not None:
+            stats.plot_stats(stats_raw, cfg['prj_folder'] + "plots/", f'raw_{cfg["tile_id"]}')
+        if stats_rsc is not None:
+            stats.plot_stats(stats_rsc, cfg['prj_folder'] + "plots/", f'rsc_{cfg["tile_id"]}')
+        if stats_icp is not None:
+            stats.plot_stats(stats_icp, cfg['prj_folder'] + "plots/", f'icp_{cfg["tile_id"]}')
+
+        if stats_raw is not None and stats_rsc is not None and stats_icp is not None:
+            stats.plot_final(stats_raw, stats_rsc, stats_icp, cfg)
+
+    return True
+

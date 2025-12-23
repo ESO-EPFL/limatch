@@ -1,12 +1,14 @@
 import open3d as o3d
 
+from lib.data_handling import Tile
+
 def create_sphere(radius, position):
     sphere = o3d.geometry.TriangleMesh.create_sphere(radius=radius)
     sphere.paint_uniform_color([1, 0.2, 0.2])
     sphere.translate(position)  
     return sphere
 
-def visKpts(tile_a, tile_b, kpts_a, kpts_b):
+def vis_kpts(tile_a: Tile, tile_b: Tile, kpts_a, kpts_b):
     pcd_a = o3d.geometry.PointCloud()
     pcd_b = o3d.geometry.PointCloud()
 
@@ -19,21 +21,7 @@ def visKpts(tile_a, tile_b, kpts_a, kpts_b):
 
     o3d.visualization.draw([pcd_a, pcd_b, kpts_a, kpts_b])
 
-def visMatchPts(xyz_key, correspondences):
-    pcd_a = o3d.geometry.PointCloud()
-    pcd_a.points = o3d.utility.Vector3dVector(xyz_key)
-    pcd_a.paint_uniform_color([0, 116/256, 128/256])
-
-    cor_xyz = correspondences[:, 4:7]
-
-    spheres = [pcd_a]
-
-    # for i in range(cor_xyz.shape[0]):
-    #     spheres.append(create_sphere(0.25, cor_xyz[i])) 
-
-    o3d.visualization.draw(spheres)
-
-def vis_candidates(tile_key, tile_target):
+def vis_candidates(tile_key: Tile, tile_target: Tile):
     pcd = o3d.geometry.PointCloud()
     pcd_to_descr = o3d.geometry.PointCloud()
     kpts = o3d.geometry.PointCloud()

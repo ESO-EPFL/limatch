@@ -1,14 +1,19 @@
 import numpy as np
 import open3d as o3d
-import multiprocessing as mp
 
-def ransacFilter(cor, cfg):
+from lib.data_handling import Corres, Tile
+
+import logging
+logger = logging.getLogger("LiMatch")
+from lib.logger import log_sub
+
+def ransac_filter(c: Corres, cfg):
     """
     RANSAC filter based on correspondences
     """
-    n_corr = cor.shape[0]
-    kpts_xyz = cor[:, 4:7]
-    target_xyz = cor[:, 7:10]
+    n_corr = c.idx_a.shape[0]
+    kpts_xyz = c.xyz_a
+    target_xyz = c.xyz_b
     thresh = cfg['rsc_thr']
     
     correspondences_index = np.ones(
@@ -36,7 +41,33 @@ def ransacFilter(cor, cfg):
     permutations = np.where(filt_cor[:,0]==filt_cor[:,1])
     filt_cor = filt_cor[permutations]
     if n_corr == 0:
-        print("                           !Warning at least 1 ransac filter failed!")
-    else: 
-        print(f"inliers: {int(100*filt_cor.shape[0]/n_corr)}% ")
+        log_sub(logger, "WARNING: This tile's RANSAC failed.")
     return filt_cor
+
+def reciprocity_test(tile_a: Tile, tile_b: Tile):
+    """
+    Compute reciprocal correspondences between tile_a and tile_b.
+
+    Returns
+    -------
+    reciprocal_mask : np.ndarray (bool)
+    """
+
+    b_index_of_id = {int(k): idx for idx, k in enumerate(tile_b.kpts_id)}
+
+    M = tile_a.kpts_id.shape[0]
+    idx_in_b = np.full(M, -1, dtype=int)   # default -1 means "not found"
+
+    for i in range(M):
+        b_id = int(tile_a.cor_id[i]) 
+        idx_in_b[i] = b_index_of_id.get(b_id, -1)
+
+    valid = idx_in_b >= 0
+
+    reciprocal = np.zeros(M, dtype=bool)
+    reciprocal[valid] = (
+        tile_b.cor_id[idx_in_b[valid]].astype(int)
+        == tile_a.kpts_id[valid].astype(int)
+    )
+
+    return reciprocal
