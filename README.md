@@ -227,7 +227,7 @@ t_b, t_a, vec_b_x, vec_b_y, vec_b_z, vec_a_x, vec_a_y, vec_a_z
 ### I. Download Data
 
 From the Zenodo record:  
-https://zenodo.org/records/13929655
+https://zenodo.org/records/18037973
 
 - Two baseline point clouds (ASCII, EPSG:2056)
 - One SBET trajectory
