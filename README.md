@@ -242,7 +242,7 @@ Edit `ALS_close_range.yml`:
 ### III. Run
 
 ```bash
-python3 matching_pipeline.py   -c1 Baseline_cloud1.txt   -c2 Baseline_cloud2.txt   -y ALS_close_range.yml
+python3 main.py   -c1 Baseline_cloud1.txt   -c2 Baseline_cloud2.txt   -y ALS_close_range.yml
 ```
 
 ### IV. Analyze Results
