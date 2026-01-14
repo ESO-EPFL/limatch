@@ -32,7 +32,7 @@ def load_ascii_cloud(file, cfg):
         time = raw[:, cfg['t_col']] 
 
     else:
-        time = np.zeros((xyz.shape[0], 1))
+        time = np.zeros((xyz.shape[0]))
 
     if 'lasvec_col' in cfg and cfg['lasvec_col'] is not None:
         las_vec = raw[:, cfg['lasvec_col']]
@@ -54,10 +54,10 @@ def load_las_cloud(file, cfg):
         if has_gps_time:
             time = las.gps_time
         else:
-            time = np.zeros((las.xyz.shape[0], 1))
+            time = np.zeros((las.xyz.shape[0]))
             log_sub(logger, f"LAS file {file} has no GPS time. Setting all times to zero.")
 
-            if cfg.get("lasvec_source", "simulate") or cfg.get("lasvec_source", "input"):
+            if 'lasvec_source' in cfg and (cfg.get("lasvec_source", "simulate") or cfg.get("lasvec_source", "input")):
                 log_sub(logger, f"Warning: lasvec_source is set to '{cfg['lasvec_source']}' but LAS file has no GPS time.")
                 log_sub(logger, f"Setting laser vector processing needs point cloud to trajectory time sync")
                 log_sub(logger, f"Setting cfg['lasvec_source'] to None to skip laser vector processing")

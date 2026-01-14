@@ -378,7 +378,7 @@ def build_output(c: Corres, tile_a: Tile, tile_b: Tile, cfg):
         log_sub(logger, "No correspondences to save.")
         return
 
-    if cfg.get("lasvec_source", "simulate") or cfg.get("lasvec_source", "input"):
+    if 'lasvec_source' in cfg and (cfg.get("lasvec_source", "simulate") or cfg.get("lasvec_source", "input")):
         traj = Trajectory.fromSBET(cfg["trajectory"])
 
         if cfg["lasvec_source"] == "simulate":
@@ -431,7 +431,7 @@ def build_output(c: Corres, tile_a: Tile, tile_b: Tile, cfg):
                     fmt='%.9f, %.9f, %.4f, %.4f, %.4f, %.4f, %.4f, %.4f')
     else:
         log_sub(logger, "No laser vector processing requested, or option invalid, should be 'simulate' or 'input'.")
-  
+
     assert c.icp_vec.shape == c.xyz_a.shape
     assert c.time_a.shape == c.time_b.shape
     assert c.xyz_a.shape == c.xyz_b.shape
