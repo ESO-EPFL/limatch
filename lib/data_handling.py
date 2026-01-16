@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 import numpy as np
+import sys
 import copy
 import open3d as o3d
 from scipy.spatial import KDTree
@@ -338,12 +339,16 @@ def prepare_overlap(tile_a: Tile, tile_b: Tile, cfg):
         tile_a.rsc_id = kept_id_a.astype(np.uint16)
         tile_b.rsc_id = kept_id_b.astype(np.uint16)
 
+        if np.max(kept_id_a) == 0 or np.max(kept_id_b) == 0:
+            log_sub(logger, "WARNING No valid overlapping tiles detected after tiling.")
+            log_sub_sub(logger, "Check tile size and min density param. in configuration.")
+            sys.exit()
         tile_a.apply_mask(kept_id_a > 0)
         tile_b.apply_mask(kept_id_b > 0)
 
     else:
-        kept_id_a = np.zeros((tile_a.xyz.shape[0],), dtype=np.uint8)
-        kept_id_b = np.zeros((tile_b.xyz.shape[0],), dtype=np.uint8)
+        kept_id_a = np.ones((tile_a.xyz.shape[0],), dtype=np.uint8)
+        kept_id_b = np.ones((tile_b.xyz.shape[0],), dtype=np.uint8)
         log_sub(logger, "No tiling... (all points kept)")
 
     shift = tile_a.xyz.mean(axis=0)
