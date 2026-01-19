@@ -115,7 +115,7 @@ def simulate_las_vec(traj: Trajectory, time, xyz, R_s2b, a_s, point_epsg, ltp_or
         ecef_pts = ltp.enu_to_ecef(xyz)
     elif point_epsg == 2056:
         log_sub_sub(logger, f"Converting points from LV95 to ECEF...")
-        log_sub_sub(logger, f"WARNING: usnig approximate transform with meter level accuracy ...")
+        log_sub_sub(logger, f"WARNING: using approximate transform with meter level accuracy ...")
         log_sub_sub(logger, f"Constant bias in laser vector expected, see Swisstop documentation for details.")
         for i in range(xyz.shape[0]):
             lla[i, :] = lv95_to_wgs84_geodetic(xyz[i,0], xyz[i,1], xyz[i,2])

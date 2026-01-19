@@ -65,6 +65,7 @@ def run_pipeline(cloud1_path, cloud2_path, cfg):
     compute_descriptors(tile_a, tile_b, model, device, cfg)
     time_describe = time.time()
     stats['time']['Description'] = time_describe - time_detect
+    
     # === MATCHING ====================================================
     corres = match_features(tile_a, tile_b, cfg)
     time_match = time.time()
