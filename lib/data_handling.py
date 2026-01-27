@@ -412,7 +412,7 @@ def build_output(c: Corres, tile_a: Tile, tile_b: Tile, cfg):
         assert las_vec_a.shape[1] == 3
         assert las_vec_a.shape == las_vec_b.shape
 
-        p2p = np.concatenate((c.time_b, c.time_a, las_vec_b, las_vec_a), axis=1)
+        p2p = np.concatenate((c.time_b.reshape(-1,1), c.time_a.reshape(-1,1), las_vec_b, las_vec_a), axis=1)
         p2p = p2p[p2p[:, 0].argsort()]
 
         log_sub(logger, "Correcting laser vectors B with ICP results...")
@@ -422,7 +422,7 @@ def build_output(c: Corres, tile_a: Tile, tile_b: Tile, cfg):
                                                 c.time_b,
                                                 c.icp_vec)
         
-        p2p_icp = np.concatenate((c.time_b, c.time_a, las_vec_b_corrected, las_vec_a), axis=1)
+        p2p_icp = np.concatenate((c.time_b.reshape(-1,1), c.time_a.reshape(-1,1), las_vec_b_corrected, las_vec_a), axis=1)
         p2p_icp = p2p_icp[p2p_icp[:, 0].argsort()]
 
         log_sub(logger, f"Saving to {cfg['prj_folder']}cor_outputs/")
