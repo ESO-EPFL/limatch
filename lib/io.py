@@ -62,8 +62,6 @@ def load_las_cloud(file, cfg):
                 log_sub(logger, f"Setting laser vector processing needs point cloud to trajectory time sync")
                 log_sub(logger, f"Setting cfg['lasvec_source'] to None to skip laser vector processing")
 
-
-
         las_vec = np.zeros((las.xyz.shape[0], 3))
 
     return las.xyz, time, las_vec
