@@ -65,6 +65,7 @@ def run_pipeline(cloud1_path, cloud2_path, cfg):
     compute_descriptors(tile_a, tile_b, model, device, cfg)
     time_describe = time.time()
     stats['time']['Description'] = time_describe - time_detect
+    
     # === MATCHING ====================================================
     corres = match_features(tile_a, tile_b, cfg)
     time_match = time.time()
@@ -288,3 +289,11 @@ def out_and_plot(corres, corres_rsc, corres_icp, tile_a, tile_b, cfg):
 
     return True
 
+if __name__ == "__main__":
+    print("This is a module file. Please run the pipeline through:")
+    print("1. from separate script. Example:")
+    print("from matching_pipeline import run_pipeline")
+    print("corres_icp, stats = run_pipeline('path/to/cloud1.txt', 'path/to/cloud2.txt', cfg)")
+    print("2. from command line with main.py. Example")
+    print("python main.py --c1 path/to/cloud1.txt --c2 path/to/cloud2.txt --y path/to/config.yaml")
+    pass

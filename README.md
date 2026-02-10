@@ -66,7 +66,7 @@ The active mode is controlled by the presence and value of `lasvec_source` in th
 Run the matching pipeline between two point clouds:
 
 ```bash
-python3 matching_pipeline.py   -c1 path_to_cloud_1   -c2 path_to_cloud_2   -y path_to_config.yml
+python3 main.py   -c1 path_to_cloud_1   -c2 path_to_cloud_2   -y path_to_config.yml
 ```
 
 Both clouds must:

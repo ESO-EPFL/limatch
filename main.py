@@ -4,7 +4,7 @@ from matching_pipeline import run_pipeline
 
 def match_clouds(cloud1, cloud2, config):
     """
-    Public API: Python users import this function.
+    Public API.
     """
     if isinstance(config, str):
         cfg = yaml.safe_load(open(config))
@@ -16,7 +16,7 @@ def match_clouds(cloud1, cloud2, config):
 
 def main():
     """
-    CLI wrapper: runs from the terminal.
+    CLI wrapper.
     """
 
     parser = argparse.ArgumentParser(description="LiMatch CLI unified")
