@@ -4,6 +4,7 @@ import numpy as np
 import os
 import psutil
 from pathlib import Path
+import copy
 
 from lib import stats
 from lib.io import create_project_folder
@@ -25,9 +26,9 @@ def run_pipeline(cloud1_path, cloud2_path, cfg):
     """
     Runs the full matching pipeline.
     """
-    time0 = time.time()
+    
     stats = {}
-    stats["time"] = {}
+    t_0 = time.time()
     stats["metrics"] = {}
     
     logger = get_logger(cfg)
@@ -40,67 +41,85 @@ def run_pipeline(cloud1_path, cloud2_path, cfg):
 
     # === LOAD MODEL ==================================================
     model, device = load_model(cfg)
-    time_model = time.time()
-    stats['time']['Model setup'] = time_model - time0
+    stats['time']['model_setup'] = time.time()
 
 
     # === PREPROCESSING ===============================================
     tile_a, tile_b = load_tiles(cloud1_path, cloud2_path, cfg)
+    if cfg.get("coarse_to_fine", True):
+        logger.info("Preprocessing coarse tiles...")
+        cfg_coarse = coarse_config(cfg, factor=10)
+        tile_a_c = copy.deepcopy(tile_a)
+        tile_b_c = copy.deepcopy(tile_b)
+        preprocess_tiles(tile_a_c, tile_b_c, cfg_coarse)
+        logger.info("Preprocessing fine tiles...")
+
     preprocess_tiles(tile_a, tile_b, cfg)
 
-    time_prep = time.time()
-    stats['time']['Preprocessing'] = time_prep - time_model
     stats["metrics"]["Points A"] = tile_a.xyz.shape[0]
     stats["metrics"]["Points B"] = tile_b.xyz.shape[0]
     stats["metrics"]["Tiles num."] = int(np.max(tile_a.rsc_id)) if hasattr(tile_a, "rsc_id") else 1
 
+    if cfg.get("coarse_to_fine", True):
+        logger.info("Running coarse stage...")
+        R, t = run_matching_stage(tile_a_c, tile_b_c, model, device, cfg_coarse, stats, coarse=True)
+
+        logger.info("Applying coarse transform...")
+        apply_transform_tile(tile_b, R, t)
+
+    logger.info("Running fine stage...")
+
+    corres_final, stats = run_matching_stage(tile_a, tile_b, model, device, cfg, stats, coarse=False)
+
+    stats['time'] = time.time() - t_0
+    logger.info(f"Total pipeline time: {stats['time']:.2f} seconds")
+    return corres_final, stats
+
+def run_matching_stage(tile_a, tile_b, model, device, cfg, stats, coarse=False):
+
+
     # === KEYPOINT DETECTION ==========================================
-    detect_keypoints(tile_a, tile_b, cfg)
-    time_detect = time.time()
-    stats['time']['Detection'] = time_detect - time_prep
-    stats["metrics"]["Keypoints A"] = tile_a.kpts_id.shape[0]
-    stats["metrics"]["Keypoints B"] = tile_b.kpts_id.shape[0]
+    detect_keypoints(tile_a, tile_b, cfg) 
+    if not coarse:
+        stats["metrics"]["Keypoints A"] = tile_a.kpts_id.shape[0]
+        stats["metrics"]["Keypoints B"] = tile_b.kpts_id.shape[0]
 
     # === DESCRIPTION =================================================
     compute_descriptors(tile_a, tile_b, model, device, cfg)
-    time_describe = time.time()
-    stats['time']['Description'] = time_describe - time_detect
     
     # === MATCHING ====================================================
     corres = match_features(tile_a, tile_b, cfg)
-    time_match = time.time()
-    stats['time']['Matching'] = time_match - time_describe
-    stats["metrics"]["Raw matches"] = corres.idx_a.shape[0]
+    if not coarse:
+        stats["metrics"]["Raw matches"] = corres.idx_a.shape[0]
 
     # === RANSAC ======================================================
     rsc_tile_ids = np.unique(tile_a.rsc_id)
     corres_rsc = filter_matches(corres, rsc_tile_ids, cfg)
-    time_ransac = time.time()
-    stats['time']['RANSAC'] = time_ransac - time_match
-    stats["metrics"]["RANSAC matches"] = (
-        corres_rsc.idx_a.shape[0] if corres_rsc is not None else 0
-    )
+    if not coarse:
+        stats["metrics"]["RANSAC matches"] = (
+            corres_rsc.idx_a.shape[0] if corres_rsc is not None else 0
+        )
 
     # === ICP =========================================================
     corres_icp = refine_icp(corres_rsc, tile_a, tile_b, cfg)
-    time_icp = time.time()
-    stats['time']['ICP'] = time_icp - time_ransac
 
-    # === FINAL OUTPUT ===============================================
-    out_and_plot(corres, corres_rsc, corres_icp, tile_a, tile_b, cfg)
-    time_end = time.time()
-    stats['time']['Total'] = time_end - time0
+    if coarse:
+        return estimate_helmert(corres_icp)
+    
+    else:
+        stats["metrics"]["ICP matches"] = (
+        corres_icp.idx_a.shape[0] if corres_icp is not None else 0
+        )
+        out_and_plot(corres, corres_rsc, corres_icp, tile_a, tile_b, cfg)
 
-    logger.info("[Pipeline summary]")
-    for k in ["Model setup", "Preprocessing", "Detection", "Description", "Matching", "RANSAC", "ICP", "Total"]:
-        logger.info(f"  {k:>15}: {stats['time'][k]:.2f}s")
+        logger.info("[Pipeline summary]")
 
-    logger.info("[Metrics]")
-    for k, v in stats["metrics"].items():
-        logger.info(f"  {k:>15}: {v}")
-    logger.info(f"Peak RAM: {process.memory_info().rss / (1024 ** 3):.2f} GB")
-    logger.info("LiMatch pipeline completed.")
-    return corres_icp, stats
+        logger.info("[Metrics]")
+        for k, v in stats["metrics"].items():
+            logger.info(f"  {k:>15}: {v}")
+        logger.info(f"Peak RAM: {process.memory_info().rss / (1024 ** 3):.2f} GB")
+        logger.info("LiMatch pipeline completed.")
+        return corres_icp, stats
 
 def load_tiles(cloud1_path, cloud2_path, cfg):
     """
@@ -260,6 +279,87 @@ def refine_icp(corres_rsc, tile_a, tile_b, cfg):
         corres_icp = corres_tile if corres_icp is None else concatenate_corres(corres_icp, corres_tile)
 
     return corres_icp
+
+def coarse_config(cfg, factor=10):
+    """
+    Estimate coarse matching configuration from curren config
+    """
+
+    changed_keys = [
+        "vox_size",
+        "iss_sln_r",
+        "iss_nm_r",
+        "iss_vox_s",
+        "lcd_patch_r",
+        "rsc_thr",
+        "icp_patch_r",
+        "icp_thresh",
+        "icp_vox_s",
+    ]
+
+    coarse_config = cfg.copy()
+
+    for k in changed_keys:
+        if k in cfg and cfg[k] is not None and isinstance(cfg[k], (int, float)):
+            coarse_config[k] = coarse_config[k] * factor
+            logger.info(f"Coarse config: setting {k} from {cfg[k]} to {coarse_config[k]}")
+
+    return coarse_config
+
+def estimate_helmert(corres):
+    """
+    Estimate rigid transform (R, t) such that:
+        x_A ≈ R x_B + t
+
+    Parameters
+    ----------
+    corres : Corres
+        Must contain xyz_a and xyz_b arrays of shape (N, 3)
+
+    Returns
+    -------
+    R : (3,3) ndarray
+    t : (3,) ndarray
+    """
+
+    if corres is None or corres.idx_a.size < 3:
+        raise ValueError("Not enough correspondences to estimate transform.")
+
+    X = corres.xyz_a   # target
+    Y = corres.xyz_b   # source
+
+    if X.shape[0] < 3:
+        raise ValueError("At least 3 correspondences required.")
+
+    mu_X = np.mean(X, axis=0)
+    mu_Y = np.mean(Y, axis=0)
+
+    Xc = X - mu_X
+    Yc = Y - mu_Y
+
+    H = Yc.T @ Xc
+
+    U, S, Vt = np.linalg.svd(H)
+
+    R = Vt.T @ U.T
+
+    if np.linalg.det(R) < 0:
+        Vt[-1, :] *= -1
+        R = Vt.T @ U.T
+
+    t = mu_X - R @ mu_Y
+
+    return R, t
+
+def apply_transform_tile(tile, R, t):
+    """
+    Applies rigid transform to tile in-place.
+    """
+    tile.xyz = (R @ tile.xyz.T).T + t
+
+    if hasattr(tile, "kdt"):
+        tile.build_kdtree()
+
 
 def out_and_plot(corres, corres_rsc, corres_icp, tile_a, tile_b, cfg):
     """

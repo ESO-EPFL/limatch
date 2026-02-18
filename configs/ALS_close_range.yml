@@ -87,7 +87,7 @@ rsc_p: 0.9999
 rsc_maxN: 100000
 rsc_lenCheck: 0.1
 
-uncertainty_r: 1.5       # Expected maximum pointwise error (meters)
+uncertainty_r: 2.5      # Expected maximum pointwise error (meters)
 
 
 # =============================================================================
