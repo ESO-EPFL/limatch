@@ -1,9 +1,7 @@
 import math
 import torch
 import numpy as np
-
 from pathlib import Path
-import faiss
 
 from submodules.lcd.lcd import models
 
@@ -37,7 +35,11 @@ def load_model(cfg):
 
     log_sub(logger, f"Loading from: {model_path}")
     try:
-        checkpoint = torch.load(model_path, map_location=device)
+        checkpoint = torch.load(
+            model_path,
+            map_location=device,
+            weights_only=False 
+        )
     except Exception as e:
         raise RuntimeError(f"Failed to load checkpoint {model_path}: {e}")
 
@@ -151,24 +153,28 @@ def get_features(tile: Tile, model, device, cfg):
     return feat
 
 def feat_search(tile_key: Tile, tile_target: Tile):
-    """
-    Find nearest neighbors in feature space for a set of keypoints
-    """
+
+
     candidate = tile_key.candidates
-
     feats_k = tile_key.feat
-    feats = tile_target.feat
+    feats_t = tile_target.feat
 
-    f_dist = np.empty((feats_k.shape[0]))
-    idx_t = np.empty((feats_k.shape[0]), dtype=np.uint32)  
+    n_k = feats_k.shape[0]
 
-    for i in range(len(candidate)):
-        #Build idx with only candidate points for kpt i
-        flat_idx = faiss.IndexFlatL2(feats.shape[1])    
-        flat_idx.add(feats[candidate[i]])   
-        #Find nearest neigh in feat space for kpt i
-        f_dist[i], idx_local = flat_idx.search(feats_k[i].reshape(1,-1), 1)
-        #Find id of the candidate identified as match in the original cloud
-        idx_t[i] = tile_target.kpts_id[candidate[i][idx_local]]
+    f_dist = np.empty(n_k)
+    idx_t = np.empty(n_k, dtype=np.uint32)
+
+    for i in range(n_k):
+        cand_idx = candidate[i]                  # indices in target cloud
+        cand_feats = feats_t[cand_idx]           # (Nc, D)
+
+        # Compute L2 distances (vectorized)
+        diff = cand_feats - feats_k[i]           # (Nc, D)
+        dists = np.sum(diff * diff, axis=1)      # squared L2
+
+        local_min = np.argmin(dists)
+
+        f_dist[i] = dists[local_min]
+        idx_t[i] = tile_target.kpts_id[cand_idx[local_min]]
 
     return idx_t, f_dist, tile_target.xyz[idx_t]

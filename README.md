@@ -84,25 +84,27 @@ cd limatch
 
 git submodule update --init
 
-conda create -n limatch python=3.9
+conda create -n limatch python=3.10
 conda activate limatch
 
-pip install torch torchvision
-pip install -r requirements.txt
+pip install numpy==1.26 psutil matplotlib open3d scipy laspy pyproj
+
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
+
 ```
 
 > **Note**  
-> Install a PyTorch build compatible with your CUDA / driver version if GPU acceleration is desired:  
-> https://pytorch.org/get-started/previous-versions/
+> You might need to install another version of Pytorch / CUDA depending on your GPU 
+> https://pytorch.org/get-started/previous-versions/  
+> Alternatively, you can run on torch CPU but it's kinda slow :( 
 
-CUDA is optional but strongly recommended for large‑scale datasets.
+ 
 
 ### Main Dependencies
 
 - [PyTorch](https://pytorch.org/)
 - [Open3D](http://www.open3d.org/)
 - [SciPy](https://scipy.org/)
-- [FAISS](https://github.com/facebookresearch/faiss)
 - [laspy](https://laspy.readthedocs.io/)
 
 ---
