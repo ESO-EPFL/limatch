@@ -126,6 +126,23 @@ class Tile:
 
         self.apply_mask(mask)
 
+    def copy_minimal(self):
+        new = Tile.__new__(Tile)
+
+        new.time = self.time.copy() if hasattr(self, "time") else None
+        new.xyz = self.xyz.copy()
+        new.las_vec = self.las_vec.copy() if hasattr(self, "las_vec") else None
+        new.rsc_id = np.ones_like(self.rsc_id) 
+
+        new.shift = getattr(self, "shift", None)
+
+        new.rebuild_kdt()
+
+        return new
+
+    def apply_transform(self, R, t):
+        self.xyz = (R @ self.xyz.T).T + t
+        self.rebuild_kdt()  
 
     def clear_features(self):
         """Delete descriptor matrix if present."""
