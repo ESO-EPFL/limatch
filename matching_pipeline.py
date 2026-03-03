@@ -57,7 +57,17 @@ def run_pipeline(cloud1_path, cloud2_path, cfg):
     # ==== COARSE BOOTSTRAP (OPTIONAL) ==========================================
     if cfg.get("coarse", {}).get("enabled", False):
         R,t = run_coarse_bootstrap(tile_a, tile_b, model, device, cfg)
+        
+        np.savetxt(cfg['prj_folder'] + f"tiles/{cfg['tile_id']}_a.csv",
+                   np.concatenate([tile_a.rsc_id.reshape(-1, 1), tile_a.xyz], axis=1),
+                   delimiter=',')
+        np.savetxt(cfg['prj_folder'] + f"tiles/{cfg['tile_id']}_b.csv",
+                   np.concatenate([tile_b.rsc_id.reshape(-1, 1), tile_b.xyz], axis=1),
+                   delimiter=',')
         tile_b.apply_transform(R, t)
+        np.savetxt(cfg['prj_folder'] + f"tiles/{cfg['tile_id']}_b_aligned.csv",
+                   np.concatenate([tile_b.rsc_id.reshape(-1, 1), tile_b.xyz], axis=1),
+                   delimiter=',')
         
 
     # === KEYPOINT DETECTION ==========================================

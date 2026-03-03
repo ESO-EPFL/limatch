@@ -19,7 +19,7 @@ def run_coarse_bootstrap(tile_a, tile_b, model, device, cfg):
 
     coarse_cfg = make_coarse_cfg(cfg)
 
-    R_true, t_true = emulate_rotations(tile_b)
+    #R_true, t_true = emulate_rotations(tile_b)
     
     tile_a_c = tile_a.copy_minimal()
     tile_b_c = tile_b.copy_minimal()
@@ -56,10 +56,6 @@ def run_coarse_bootstrap(tile_a, tile_b, model, device, cfg):
     
     log_sub(logger, f"Initial coarse residual: {init_res.mean():.2f} m")
     log_sub(logger, f"Adjusted coarse residual: {adj_res.mean():.2f} m")
-
-    R_err = R @ R_true
-    angle = np.degrees(np.arccos((np.trace(R_err)-1)/2))
-    log_sub(logger, f"Coarse rotation error: {angle:.2f} degrees")
     
     return R, t
 
