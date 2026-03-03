@@ -8,7 +8,7 @@ from pathlib import Path
 from lib.io import create_project_folder
 from lib.utils_LCD import load_model
 from lib.keypoints import *
-from lib.coarse import run_coarse_bootstrap
+from lib.coarse import run_coarse_bootstrap, emulate_rotations
 
 process = psutil.Process(os.getpid())
 
@@ -57,8 +57,7 @@ def run_pipeline(cloud1_path, cloud2_path, cfg):
     # ==== COARSE BOOTSTRAP (OPTIONAL) ==========================================
     if cfg.get("coarse", {}).get("enabled", False):
         R,t = run_coarse_bootstrap(tile_a, tile_b, model, device, cfg)
-        if R is not None and t is not None:
-            tile_a.apply_transform(R, t)
+        tile_b.apply_transform(R, t)
         
 
     # === KEYPOINT DETECTION ==========================================

@@ -19,10 +19,10 @@ def run_coarse_bootstrap(tile_a, tile_b, model, device, cfg):
 
     coarse_cfg = make_coarse_cfg(cfg)
 
+    R_true, t_true = emulate_rotations(tile_b)
+    
     tile_a_c = tile_a.copy_minimal()
     tile_b_c = tile_b.copy_minimal()
-
-    R_true, t_true = emulate_rotations(tile_a_c)
 
     if coarse_cfg.get("vox_size", 0) > 0:
         tile_a_c.apply_voxelization(coarse_cfg)
@@ -51,13 +51,13 @@ def run_coarse_bootstrap(tile_a, tile_b, model, device, cfg):
 
     init_res = np.linalg.norm(A - B, axis=1)
     
-    A_aligned = (R @ A.T).T + t
-    adj_res = np.linalg.norm(A_aligned - B, axis=1)
+    B_aligned = (R @ B.T).T + t
+    adj_res = np.linalg.norm(A - B_aligned, axis=1)
     
     log_sub(logger, f"Initial coarse residual: {init_res.mean():.2f} m")
     log_sub(logger, f"Adjusted coarse residual: {adj_res.mean():.2f} m")
 
-    R_err = R @ R_true.T
+    R_err = R @ R_true
     angle = np.degrees(np.arccos((np.trace(R_err)-1)/2))
     log_sub(logger, f"Coarse rotation error: {angle:.2f} degrees")
     
@@ -96,14 +96,20 @@ def make_coarse_cfg(cfg):
 
     return c
 
-def estimate_rigid_transform(A, B):
-    centroid_A = A.mean(axis=0)
-    centroid_B = B.mean(axis=0)
+def estimate_rigid_transform(ref, target):
+    """
+    Computes R, t sucht that
+    
+    R @ target + t ≈ ref
+    
+    """
+    centroid_ref = ref.mean(axis=0)
+    centroid_target = target.mean(axis=0)
 
-    AA = A - centroid_A
-    BB = B - centroid_B
+    loc_ref = ref - centroid_ref
+    loc_target = target - centroid_target
 
-    H = AA.T @ BB
+    H = loc_target.T @ loc_ref
     U, S, Vt = np.linalg.svd(H)
     R = Vt.T @ U.T
 
@@ -111,7 +117,7 @@ def estimate_rigid_transform(A, B):
         Vt[2,:] *= -1
         R = Vt.T @ U.T
 
-    t = centroid_B - R @ centroid_A
+    t = centroid_ref - R @ centroid_target
     log_sub(logger, f"SVD singular values: {S}")
     log_sub(logger, f"Estimated coarse rotation:\n{R}")
     log_sub(logger, f"Estimated coarse translation: {t}")
@@ -122,7 +128,7 @@ def estimate_rigid_transform(A, B):
 
     return R, t
 
-def emulate_rotations(tile, rpy = [3,3,3], t=np.array([0,0,0])):
+def emulate_rotations(tile, rpy = [10,10,10], t=np.array([50,35,-15])):
     log_sub(logger, f"Emulating rotations on tile with roll={rpy[0]}, pitch={rpy[1]}, yaw={rpy[2]} (degrees)")
     log_sub(logger, f"and translation {t} (meters)")
 
